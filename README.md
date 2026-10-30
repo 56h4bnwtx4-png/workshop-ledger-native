@@ -1,8 +1,13 @@
-# 车间计件 · iPadOS 原生版 v1.1.0
+# 车间计件 · iPadOS 原生版 v1.1.1
 
 纯 SwiftUI 原生应用，不使用 WebView。账本保存在应用沙盒内的 SQLite 数据库，正式账单会通过 HTTPS 自动备份到阿里云，草稿始终只留在本机。
 
-## v1.1.0 新增
+## v1.1.1 修复
+
+- 修复正式账单自动同步任务被自身取消，导致提示“同步失败、已取消”的问题
+- 防止同步请求进行期间再次修改数据时，把新修改误标为已备份
+
+### 云端功能
 
 - 设置页新增云端账号登录、退出、立即同步 / 重新备份
 - 正式账单提交后自动上传；失败显示“待云端备份”并每 30 秒重试
@@ -65,9 +70,9 @@ tools/generate_icons.py          可选的图标重新生成脚本
 2. 将本目录全部文件上传到仓库，默认分支使用 \`main\`。
 3. 打开仓库的 **Actions** 页面，选择 **Build unsigned arm64 IPA**。
 4. 点击 **Run workflow**。
-5. 构建完成后，在该次运行底部下载 \`WorkshopLedger-v1.1.0-iOS-arm64-unsigned\` Artifact。
+5. 构建完成后，在该次运行底部下载 \`WorkshopLedger-v1.1.1-iOS-arm64-unsigned\` Artifact。
 6. 解压 Artifact，得到：
-   - \`WorkshopLedger-v1.1.0-iOS-arm64-unsigned.ipa\`
+   - \`WorkshopLedger-v1.1.1-iOS-arm64-unsigned.ipa\`
    - \`SHA256SUMS.txt\`
 7. 将 IPA 传到 iPad，使用 TrollStore 打开并安装。
 

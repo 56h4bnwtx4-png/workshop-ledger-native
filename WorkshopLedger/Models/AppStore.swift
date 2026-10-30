@@ -44,6 +44,8 @@ final class AppStore: ObservableObject {
     private let defaults: UserDefaults
     private var activeSession: ActiveCloudSession?
     private var retryTask: Task<Void, Never>?
+    private var syncInFlight = false
+    private var cloudChangeGeneration = 0
     private var didStartCloud = false
 
     private let baseURLKey = "workshopLedger.cloud.baseURL.v1"
@@ -417,7 +419,12 @@ final class AppStore: ObservableObject {
             return false
         }
 
+        guard !syncInFlight else { return false }
         retryTask?.cancel()
+        retryTask = nil
+        let generation = cloudChangeGeneration
+        syncInFlight = true
+        defer { syncInFlight = false }
         cloudState = .syncing
         lastCloudError = nil
         do {
@@ -425,9 +432,14 @@ final class AppStore: ObservableObject {
             cloudRevision = saved.revision
             lastCloudSyncAt = Date()
             lastCloudSnapshotName = saved.latestSnapshot?.fileName ?? lastCloudSnapshotName
-            markCloudClean()
             persistCloudMetadata()
-            cloudState = .synced
+            if generation == cloudChangeGeneration {
+                markCloudClean()
+                cloudState = .synced
+            } else {
+                cloudState = .pending
+                scheduleRetry(after: 2)
+            }
             return true
         } catch {
             let message = friendlyCloudError(error)
@@ -682,6 +694,7 @@ final class AppStore: ObservableObject {
     }
 
     private func markCloudDirty(billDate: Date? = nil) {
+        cloudChangeGeneration &+= 1
         hasPendingCloudChanges = true
         if let billDate {
             pendingBillDates.insert(DateKey.string(from: billDate))
@@ -707,6 +720,7 @@ final class AppStore: ObservableObject {
         retryTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
             guard !Task.isCancelled, let self else { return }
+            self.retryTask = nil
             let success = await self.syncNow(force: false)
             if !success, self.hasPendingCloudChanges, self.activeSession != nil {
                 self.scheduleRetry(after: 30)
