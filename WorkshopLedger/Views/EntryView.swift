@@ -362,43 +362,63 @@ struct EntryView: View {
     }
 
     private func customerPicker(row: Binding<EntryRow>) -> some View {
-        Picker("", selection: row.customer) {
-            Text(store.allCustomerNames.isEmpty ? "暂无客户，请先到设置页添加" : "请选择客户")
-                .tag("")
-            ForEach(store.allCustomerNames, id: \.self) { name in
-                Text(name).tag(name)
-            }
-        }
-        .labelsHidden()
-        .pickerStyle(MenuPickerStyle())
-        .font(.system(size: 14, weight: .medium))
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 44)
-        .contentShape(Rectangle())
-        .background(Color.white)
-        .overlay(cellBorder)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .disabled(store.allCustomerNames.isEmpty && row.wrappedValue.customer.isEmpty)
+        directoryPicker(
+            selection: row.customer,
+            options: store.allCustomerNames,
+            placeholder: store.allCustomerNames.isEmpty ? "暂无客户，请先到设置页添加" : "请选择客户"
+        )
     }
 
     private func employeePicker(row: Binding<EntryRow>) -> some View {
-        Picker("", selection: row.employee) {
-            Text(store.allEmployeeNames.isEmpty ? "暂无员工，请先到设置页添加" : "请选择员工")
-                .tag("")
-            ForEach(store.allEmployeeNames, id: \.self) { name in
-                Text(name).tag(name)
+        directoryPicker(
+            selection: row.employee,
+            options: store.allEmployeeNames,
+            placeholder: store.allEmployeeNames.isEmpty ? "暂无员工，请先到设置页添加" : "请选择员工"
+        )
+    }
+
+    private func directoryPicker(
+        selection: Binding<String>,
+        options: [String],
+        placeholder: String
+    ) -> some View {
+        let selected = selection.wrappedValue
+        let label = selected.isEmpty ? placeholder : selected
+
+        return Menu {
+            Button {
+                selection.wrappedValue = ""
+            } label: {
+                if selected.isEmpty {
+                    Label(placeholder, systemImage: "checkmark")
+                } else {
+                    Text(placeholder)
+                }
             }
+
+            ForEach(options, id: \.self) { name in
+                Button {
+                    selection.wrappedValue = name
+                } label: {
+                    if selected == name {
+                        Label(name, systemImage: "checkmark")
+                    } else {
+                        Text(name)
+                    }
+                }
+            }
+        } label: {
+            Text(label)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(AppTheme.text)
+                .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+                .background(Color.white)
+                .overlay(cellBorder)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
-        .labelsHidden()
-        .pickerStyle(MenuPickerStyle())
-        .font(.system(size: 14, weight: .medium))
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 44)
-        .contentShape(Rectangle())
-        .background(Color.white)
-        .overlay(cellBorder)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .disabled(store.allEmployeeNames.isEmpty && row.wrappedValue.employee.isEmpty)
+        .buttonStyle(PlainButtonStyle())
+        .disabled(options.isEmpty && selected.isEmpty)
     }
 
     private func headerCell(_ title: String, width: CGFloat) -> some View {

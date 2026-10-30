@@ -320,6 +320,7 @@ final class AppStore: ObservableObject {
     func login(baseURLString: String, username: String, password: String) async throws {
         let normalizedURL = try normalizeBaseURL(baseURLString)
         let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hadPendingCloudChanges = hasPendingCloudChanges
         guard !normalizedUsername.isEmpty else {
             throw RemoteLedgerError.server(status: 400, message: "请输入客户端账号。")
         }
@@ -362,12 +363,22 @@ final class AppStore: ObservableObject {
         let remote = try await authorizedWorkspace()
         cloudRevision = remote.revision
         lastCloudSnapshotName = remote.latestSnapshot?.fileName ?? lastCloudSnapshotName
-        if remote.revision > 0 && remote.data.bills.count > 0 {
+        let remoteHasData = remote.revision > 0 &&
+            (!remote.data.bills.isEmpty || !remote.data.customers.isEmpty || !remote.data.employees.isEmpty)
+        if remoteHasData {
             _ = try merge(remote.data)
         }
-        hasPendingCloudChanges = true
-        persistPendingState()
-        _ = await syncNow(force: true)
+
+        let localHasData = !customers.isEmpty || !employees.isEmpty || !bills.isEmpty
+        if hadPendingCloudChanges || (remote.revision == 0 && localHasData) {
+            if !hadPendingCloudChanges {
+                markCloudDirty()
+            }
+            _ = await syncNow(force: true)
+        } else {
+            markCloudClean()
+            cloudState = .synced
+        }
     }
 
     func logout() async {
@@ -471,12 +482,19 @@ final class AppStore: ObservableObject {
     }
 
     func restoreLatestWorkspace() async throws -> CloudRestoreResult {
+        let hadPendingCloudChanges = hasPendingCloudChanges
         let remote = try await authorizedWorkspace()
         let merged = try merge(remote.data)
         cloudRevision = remote.revision
         lastCloudSnapshotName = remote.latestSnapshot?.fileName ?? lastCloudSnapshotName
-        markCloudDirty()
-        _ = await syncNow(force: true)
+        persistCloudMetadata()
+        if hadPendingCloudChanges {
+            cloudState = .pending
+            scheduleRetry(after: 2)
+        } else {
+            markCloudClean()
+            cloudState = .synced
+        }
         return CloudRestoreResult(
             mergedBillCount: merged,
             revision: remote.revision,
@@ -494,12 +512,19 @@ final class AppStore: ObservableObject {
     }
 
     func restoreSnapshot(_ snapshot: RemoteSnapshotRecord) async throws -> CloudRestoreResult {
+        let hadPendingCloudChanges = hasPendingCloudChanges
         let envelope = try await authorizedSnapshot(id: snapshot.id)
         let merged = try merge(envelope.data)
         cloudRevision = envelope.revision
         lastCloudSnapshotName = snapshot.fileName
-        markCloudDirty()
         persistCloudMetadata()
+        if hadPendingCloudChanges {
+            cloudState = .pending
+            scheduleRetry(after: 2)
+        } else {
+            markCloudClean()
+            cloudState = .synced
+        }
         return CloudRestoreResult(
             mergedBillCount: merged,
             revision: envelope.revision,

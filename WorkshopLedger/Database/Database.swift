@@ -112,6 +112,17 @@ final class Database {
         }
     }
 
+    private func withStatement<T>(_ sql: String, _ body: (OpaquePointer) throws -> T) throws -> T {
+        let statement = try prepare(sql)
+        do {
+            let result = try body(statement)
+            sqlite3_finalize(statement)
+            return result
+        } catch {
+            sqlite3_finalize(statement)
+            throw error
+        }
+    }
     private func prepare(_ sql: String) throws -> OpaquePointer {
         guard let db else { throw DatabaseError.openFailed("数据库未打开") }
         var statement: OpaquePointer?
@@ -362,36 +373,37 @@ final class Database {
         try execute("BEGIN IMMEDIATE TRANSACTION;")
         do {
             let now = Date().timeIntervalSince1970
+
             for entry in data.customers {
-                let statement = try prepare("""
+                try withStatement("""
                     INSERT INTO customers(name, created_at, updated_at) VALUES (?, ?, ?)
                     ON CONFLICT(name) DO UPDATE SET
                         created_at = excluded.created_at,
                         updated_at = excluded.updated_at;
-                    """)
-                defer { sqlite3_finalize(statement) }
-                let createdAt = entry.createdAt.flatMap(CloudDate.parse)?.timeIntervalSince1970 ?? now
-                let updatedAt = entry.updatedAt.flatMap(CloudDate.parse)?.timeIntervalSince1970 ?? createdAt
-                try bindText(entry.name, at: 1, in: statement)
-                sqlite3_bind_double(statement, 2, createdAt)
-                sqlite3_bind_double(statement, 3, updatedAt)
-                try stepDone(statement)
+                    """) { statement in
+                    let createdAt = entry.createdAt.flatMap(CloudDate.parse)?.timeIntervalSince1970 ?? now
+                    let updatedAt = entry.updatedAt.flatMap(CloudDate.parse)?.timeIntervalSince1970 ?? createdAt
+                    try bindText(entry.name, at: 1, in: statement)
+                    sqlite3_bind_double(statement, 2, createdAt)
+                    sqlite3_bind_double(statement, 3, updatedAt)
+                    try stepDone(statement)
+                }
             }
 
             for entry in data.employees {
-                let statement = try prepare("""
+                try withStatement("""
                     INSERT INTO employees(name, created_at, updated_at) VALUES (?, ?, ?)
                     ON CONFLICT(name) DO UPDATE SET
                         created_at = excluded.created_at,
                         updated_at = excluded.updated_at;
-                    """)
-                defer { sqlite3_finalize(statement) }
-                let createdAt = entry.createdAt.flatMap(CloudDate.parse)?.timeIntervalSince1970 ?? now
-                let updatedAt = entry.updatedAt.flatMap(CloudDate.parse)?.timeIntervalSince1970 ?? createdAt
-                try bindText(entry.name, at: 1, in: statement)
-                sqlite3_bind_double(statement, 2, createdAt)
-                sqlite3_bind_double(statement, 3, updatedAt)
-                try stepDone(statement)
+                    """) { statement in
+                    let createdAt = entry.createdAt.flatMap(CloudDate.parse)?.timeIntervalSince1970 ?? now
+                    let updatedAt = entry.updatedAt.flatMap(CloudDate.parse)?.timeIntervalSince1970 ?? createdAt
+                    try bindText(entry.name, at: 1, in: statement)
+                    sqlite3_bind_double(statement, 2, createdAt)
+                    sqlite3_bind_double(statement, 3, updatedAt)
+                    try stepDone(statement)
+                }
             }
 
             for remoteBill in data.bills {
@@ -402,47 +414,46 @@ final class Database {
                     throw DatabaseError.stepFailed("云端账单没有计件明细：\(remoteBill.date)")
                 }
                 let submittedAt = CloudDate.parse(remoteBill.submittedAt)?.timeIntervalSince1970 ?? now
-                let upsert = try prepare("""
+                try withStatement("""
                     INSERT INTO bills(bill_date, submitted_at) VALUES (?, ?)
                     ON CONFLICT(bill_date) DO UPDATE SET submitted_at = excluded.submitted_at;
-                    """)
-                try bindText(remoteBill.date, at: 1, in: upsert)
-                sqlite3_bind_double(upsert, 2, submittedAt)
-                try stepDone(upsert)
-                sqlite3_finalize(upsert)
-
-                let lookup = try prepare("SELECT id FROM bills WHERE bill_date = ?;")
-                try bindText(remoteBill.date, at: 1, in: lookup)
-                guard sqlite3_step(lookup) == SQLITE_ROW else {
-                    sqlite3_finalize(lookup)
-                    throw DatabaseError.stepFailed("云端账单写入后无法读取：\(remoteBill.date)")
+                    """) { statement in
+                    try bindText(remoteBill.date, at: 1, in: statement)
+                    sqlite3_bind_double(statement, 2, submittedAt)
+                    try stepDone(statement)
                 }
-                let billID = sqlite3_column_int64(lookup, 0)
-                sqlite3_finalize(lookup)
 
-                let deleteItems = try prepare("DELETE FROM bill_items WHERE bill_id = ?;")
-                sqlite3_bind_int64(deleteItems, 1, billID)
-                try stepDone(deleteItems)
-                sqlite3_finalize(deleteItems)
+                let billID: Int64 = try withStatement("SELECT id FROM bills WHERE bill_date = ?;") { statement in
+                    try bindText(remoteBill.date, at: 1, in: statement)
+                    guard sqlite3_step(statement) == SQLITE_ROW else {
+                        throw DatabaseError.stepFailed("云端账单写入后无法读取：\(remoteBill.date)")
+                    }
+                    return sqlite3_column_int64(statement, 0)
+                }
 
-                let insertItem = try prepare("""
+                try withStatement("DELETE FROM bill_items WHERE bill_id = ?;") { statement in
+                    sqlite3_bind_int64(statement, 1, billID)
+                    try stepDone(statement)
+                }
+
+                try withStatement("""
                     INSERT INTO bill_items(bill_id, customer, employee, model, quantity, color_count)
                     VALUES (?, ?, ?, ?, ?, ?);
-                    """)
-                defer { sqlite3_finalize(insertItem) }
-                for item in remoteBill.items {
-                    guard item.quantity > 0, (1...5).contains(item.colorCount) else {
-                        throw DatabaseError.stepFailed("云端账单存在无效数量或色数：\(remoteBill.date)")
+                    """) { insertItem in
+                    for item in remoteBill.items {
+                        guard item.quantity > 0, (1...5).contains(item.colorCount) else {
+                            throw DatabaseError.stepFailed("云端账单存在无效数量或色数：\(remoteBill.date)")
+                        }
+                        sqlite3_reset(insertItem)
+                        sqlite3_clear_bindings(insertItem)
+                        sqlite3_bind_int64(insertItem, 1, billID)
+                        try bindText(item.customer, at: 2, in: insertItem)
+                        try bindText(item.employee, at: 3, in: insertItem)
+                        try bindText(item.model, at: 4, in: insertItem)
+                        sqlite3_bind_int64(insertItem, 5, Int64(item.quantity))
+                        sqlite3_bind_int64(insertItem, 6, Int64(item.colorCount))
+                        try stepDone(insertItem)
                     }
-                    sqlite3_reset(insertItem)
-                    sqlite3_clear_bindings(insertItem)
-                    sqlite3_bind_int64(insertItem, 1, billID)
-                    try bindText(item.customer, at: 2, in: insertItem)
-                    try bindText(item.employee, at: 3, in: insertItem)
-                    try bindText(item.model, at: 4, in: insertItem)
-                    sqlite3_bind_int64(insertItem, 5, Int64(item.quantity))
-                    sqlite3_bind_int64(insertItem, 6, Int64(item.colorCount))
-                    try stepDone(insertItem)
                 }
             }
 
