@@ -30,7 +30,7 @@ struct DirectoryView: View {
                     brandIcon: "gearshape",
                     backAction: onClose
                 ) {
-                    LocalModeBadge(text: "本地单机")
+                    LocalModeBadge(text: store.cloudBadgeText)
                 }
 
                 ScrollView {
@@ -44,6 +44,8 @@ struct DirectoryView: View {
                         }
 
                         settingsCard
+                        cloudCard
+                            .padding(.top, 18)
                     }
                     .padding(.horizontal, 38)
                     .padding(.top, 30)
@@ -67,6 +69,10 @@ struct DirectoryView: View {
                 )
             case .detail(let kind, let member):
                 DirectoryDetailSheet(kind: kind, member: member)
+            case .cloud:
+                CloudBackupView {
+                    activeSheet = nil
+                }
             }
         }
     }
@@ -190,6 +196,47 @@ struct DirectoryView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(AppTheme.line, lineWidth: 1)
         )
+    }
+
+    private var cloudCard: some View {
+        Panel {
+            HStack(spacing: 16) {
+                Image(systemName: store.isCloudLoggedIn ? "icloud.fill" : "icloud.slash")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(store.isCloudLoggedIn ? AppTheme.success : AppTheme.textFaint)
+                    .frame(width: 48, height: 48)
+                    .background(store.isCloudLoggedIn ? Color(red: 0.93, green: 0.97, blue: 0.95) : AppTheme.surfaceSoft)
+                    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("云端备份与恢复")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(AppTheme.text)
+                    Text(store.cloudStatusText)
+                        .font(.system(size: 12))
+                        .foregroundColor(AppTheme.textMuted)
+                    if let snapshot = store.lastCloudSnapshotName {
+                        Text("最近快照：\(snapshot)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(AppTheme.textFaint)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer()
+
+                Button {
+                    activeSheet = .cloud
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "icloud.and.arrow.up")
+                        Text(store.isCloudLoggedIn ? "管理云端备份" : "登录并配置")
+                    }
+                }
+                .buttonStyle(SecondaryButtonStyle())
+            }
+            .padding(20)
+        }
     }
 
     private func settingsTab(kind: DirectoryKind, count: Int, icon: String) -> some View {
@@ -429,6 +476,7 @@ private struct DirectoryMember: Identifiable {
 private enum DirectorySheetItem: Identifiable {
     case editor(DirectoryKind, DirectoryMember?)
     case detail(DirectoryKind, DirectoryMember)
+    case cloud
 
     var id: String {
         switch self {
@@ -436,6 +484,8 @@ private enum DirectorySheetItem: Identifiable {
             return "editor-\(kind.singular)-\(member?.id ?? 0)"
         case .detail(let kind, let member):
             return "detail-\(kind.singular)-\(member.id)"
+        case .cloud:
+            return "cloud"
         }
     }
 }

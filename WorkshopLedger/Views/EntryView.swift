@@ -17,6 +17,7 @@ struct EntryView: View {
     @State private var didFinish = false
     @State private var tableWidth: CGFloat = 820
     @State private var activeAlert: EntryAlert?
+    @State private var showDiscardConfirmation = false
     @State private var autoSaveWorkItem: DispatchWorkItem?
     @State private var showDatePicker = false
 
@@ -29,14 +30,15 @@ struct EntryView: View {
     }
 
     var body: some View {
-        WorkshopShell {
+        ZStack {
+            WorkshopShell {
             WorkshopTopBar(
                 brandTitle: "计件录入",
                 brandSubtitle: "Workshop Entry",
                 brandIcon: "square.and.pencil",
                 backAction: closeTapped
             ) {
-                LocalModeBadge(text: "本地单机")
+                LocalModeBadge(text: store.cloudBadgeText)
             }
 
             if didLoad {
@@ -57,6 +59,11 @@ struct EntryView: View {
             } else {
                 ProgressView("正在读取本机数据…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            }
+
+            if showDiscardConfirmation {
+                discardConfirmation
             }
         }
         .onAppear(perform: loadInitialData)
@@ -80,13 +87,7 @@ struct EntryView: View {
         }
         .alert(item: $activeAlert) { item in
             switch item {
-            case .discard:
-                return Alert(
-                    title: Text("确认放弃草稿？"),
-                    message: Text("将清除此日期保存在本机的临时草稿，并恢复为最近一次正式账单或空白录入。此操作不能撤销。"),
-                    primaryButton: .destructive(Text("确认放弃"), action: discardDraft),
-                    secondaryButton: .cancel(Text("取消"))
-                )
+
             case .overwrite:
                 return Alert(
                     title: Text("该日期已有正式账单"),
@@ -332,6 +333,8 @@ struct EntryView: View {
                     .foregroundColor(canDiscard ? AppTheme.danger : AppTheme.textFaint)
                 }
                 .buttonStyle(PlainButtonStyle())
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
                 .disabled(!canDiscard)
 
                 Text(saveStateText)
@@ -561,9 +564,71 @@ struct EntryView: View {
         finishAndClose()
     }
 
+    private var discardConfirmation: some View {
+        ZStack {
+            Color.black.opacity(0.28)
+                .ignoresSafeArea()
+                .onTapGesture { showDiscardConfirmation = false }
+
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(spacing: 13) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(AppTheme.danger)
+                        .frame(width: 44, height: 44)
+                        .background(AppTheme.dangerSoft)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("确认放弃草稿？")
+                            .font(.system(size: 19, weight: .bold))
+                            .foregroundColor(AppTheme.text)
+                        Text("将清除当前日期的本地临时草稿。")
+                            .font(.system(size: 12))
+                            .foregroundColor(AppTheme.textMuted)
+                    }
+                }
+
+                Text("将清除此日期保存在本机的临时草稿，并恢复为最近一次正式账单或空白录入。此操作不能撤销。")
+                    .font(.system(size: 14))
+                    .foregroundColor(AppTheme.textMuted)
+                    .lineSpacing(3)
+
+                HStack(spacing: 12) {
+                    Spacer()
+                    Button("取消") { showDiscardConfirmation = false }
+                        .buttonStyle(SecondaryButtonStyle())
+                    Button {
+                        discardDraft()
+                        showDiscardConfirmation = false
+                    } label: {
+                        Text("确认放弃")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 18)
+                            .frame(height: 40)
+                            .background(AppTheme.danger)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: 470)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(AppTheme.line, lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.18), radius: 24, x: 0, y: 12)
+            .padding(24)
+        }
+        .zIndex(50)
+    }
+
     private func requestDiscard() {
         guard canDiscard else { return }
-        activeAlert = .discard
+        showDiscardConfirmation = true
     }
 
     private func discardDraft() {
@@ -654,13 +719,11 @@ struct EntryView: View {
 }
 
 private enum EntryAlert: Identifiable {
-    case discard
     case overwrite
     case error(String)
 
     var id: String {
         switch self {
-        case .discard: return "discard"
         case .overwrite: return "overwrite"
         case .error(let message): return "error-\(message)"
         }

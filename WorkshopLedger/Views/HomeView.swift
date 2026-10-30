@@ -78,7 +78,7 @@ struct HomeView: View {
                             Circle()
                                 .fill(AppTheme.success)
                                 .frame(width: 7, height: 7)
-                            Text("数据仅保存在本机 SQLite")
+                            Text(store.cloudStatusText)
                         }
                         Spacer()
                         Text("数量 × 色数只用于计酬工作量统计")
@@ -247,6 +247,13 @@ struct HomeView: View {
                         foreground: Color(red: 0.18, green: 0.46, blue: 0.35),
                         background: Color(red: 0.93, green: 0.97, blue: 0.95)
                     )
+                    if store.isBillPending(day.date) {
+                        StatusTag(
+                            text: "待云端备份",
+                            foreground: AppTheme.accentDark,
+                            background: AppTheme.accentSoft
+                        )
+                    }
                 }
             }
             if useDraft {

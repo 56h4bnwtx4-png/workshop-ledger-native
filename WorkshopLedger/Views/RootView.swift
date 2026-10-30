@@ -9,6 +9,7 @@ enum AppSection {
 
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.scenePhase) private var scenePhase
     @State private var section: AppSection = .bills
     @State private var entryDate: Date? = DateKey.startOfDay(Date())
     @State private var entryIsBackfill = false
@@ -35,6 +36,14 @@ struct RootView: View {
                 DirectoryView { section = .bills }
             case .query:
                 QueryView { section = .bills }
+            }
+        }
+        .task {
+            await store.applicationBecameActive()
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active {
+                Task { await store.applicationBecameActive() }
             }
         }
         .alert(isPresented: errorBinding) {

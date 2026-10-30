@@ -1,35 +1,85 @@
-name: Build IPA
+name: Build unsigned arm64 IPA
+
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
+    paths:
+      - "WorkshopLedger/**"
+      - "project.yml"
+      - ".github/workflows/build-ipa.yml"
+
 permissions:
   contents: read
+
 jobs:
   build:
     runs-on: macos-14
     timeout-minutes: 30
+
     steps:
-      - uses: actions/checkout@v4
-      - run: brew install xcodegen
-      - run: xcodegen generate
-      - shell: bash
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build Release
+        shell: bash
         run: |
           set -o pipefail
-          xcodebuild -project WorkshopLedger.xcodeproj -scheme WorkshopLedger -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' CODE_SIGN_ENTITLEMENTS='' DEVELOPMENT_TEAM='' build | tee build.log
-      - shell: bash
+          xcodebuild \
+            -project WorkshopLedger.xcodeproj \
+            -scheme WorkshopLedger \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            build | tee build.log
+
+      - name: Verify and package IPA
+        shell: bash
         run: |
           set -euo pipefail
-          APP=build/Build/Products/Release-iphoneos/WorkshopLedger.app
-          test -d "$APP"
-          lipo -info "$APP/WorkshopLedger" | grep -q arm64
+          APP_PATH="build/Build/Products/Release-iphoneos/WorkshopLedger.app"
+          test -d "$APP_PATH"
+          test -f "$APP_PATH/WorkshopLedger"
+          lipo -info "$APP_PATH/WorkshopLedger"
+          lipo -info "$APP_PATH/WorkshopLedger" | grep -q arm64
+          plutil -p "$APP_PATH/Info.plist"
+          rm -rf Payload
           mkdir -p Payload
-          cp -R "$APP" Payload/
-          zip -qry WorkshopLedger-iOS-arm64-unsigned.ipa Payload
-          shasum -a 256 WorkshopLedger-iOS-arm64-unsigned.ipa > SHA256SUMS.txt
-      - uses: actions/upload-artifact@v4
+          cp -R "$APP_PATH" Payload/
+          zip -qry WorkshopLedger-v1.1.0-iOS-arm64-unsigned.ipa Payload
+          unzip -l WorkshopLedger-v1.1.0-iOS-arm64-unsigned.ipa
+          shasum -a 256 WorkshopLedger-v1.1.0-iOS-arm64-unsigned.ipa > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: WorkshopLedger-iOS-arm64-unsigned
+          name: WorkshopLedger-v1.1.0-iOS-arm64-unsigned
           path: |
-            WorkshopLedger-iOS-arm64-unsigned.ipa
+            WorkshopLedger-v1.1.0-iOS-arm64-unsigned.ipa
             SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcode-build-log
+          path: build.log
+          if-no-files-found: ignore
