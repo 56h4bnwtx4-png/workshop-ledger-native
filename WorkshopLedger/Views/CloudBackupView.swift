@@ -4,19 +4,21 @@ struct CloudBackupView: View {
     @EnvironmentObject private var store: AppStore
     let onClose: () -> Void
 
-    @State private var serverURL = ""
-    @State private var username = ""
-    @State private var password = ""
     @State private var isWorking = false
     @State private var snapshots: [RemoteSnapshotRecord] = []
     @State private var alertItem: CloudAlertItem?
+    @State private var showPasswordForm = false
+    @State private var currentPassword = ""
+    @State private var newPassword = ""
+    @State private var confirmPassword = ""
+    @State private var passwordError = ""
 
     var body: some View {
         WorkshopShell {
             WorkshopTopBar(
-                brandTitle: "云端备份",
-                brandSubtitle: "Cloud Backup",
-                brandIcon: "icloud.and.arrow.up",
+                brandTitle: "账号与备份",
+                brandSubtitle: "Account & Backup",
+                brandIcon: "person.crop.circle.badge.checkmark",
                 backAction: onClose
             ) {
                 LocalModeBadge(text: store.cloudBadgeText)
@@ -25,19 +27,17 @@ struct CloudBackupView: View {
             ScrollView {
                 VStack(spacing: 18) {
                     PageHeading(
-                        eyebrow: "正式账单备份",
-                        title: "云端备份与恢复",
-                        note: "每次提交后自动上传；草稿始终只保存在本机，不会进入云端。"
+                        eyebrow: "账号数据",
+                        title: "账号与云端备份",
+                        note: "正式账单、客户和员工档案随账号同步；草稿始终只保存在当前设备。"
                     ) {
-                        PageScopeBadge(label: "服务器", value: "ledger.893884474.xyz")
+                        PageScopeBadge(label: "账号", value: store.accountDisplayName)
                     }
 
                     statusCard
                     accountCard
-                    if store.isCloudLoggedIn {
-                        actionCard
-                        snapshotCard
-                    }
+                    actionCard
+                    snapshotCard
                 }
                 .padding(.horizontal, 38)
                 .padding(.top, 30)
@@ -45,11 +45,8 @@ struct CloudBackupView: View {
             }
         }
         .task {
-            loadSavedFields()
-            if store.isCloudLoggedIn {
-                await refreshSnapshots(showError: false)
-                await store.refreshCloudStatus()
-            }
+            await refreshSnapshots(showError: false)
+            await store.refreshCloudStatus()
         }
         .alert(item: $alertItem) { item in
             switch item {
@@ -62,7 +59,7 @@ struct CloudBackupView: View {
             case .confirmLatest:
                 return Alert(
                     title: Text("从服务器当前数据恢复？"),
-                    message: Text("将合并服务器当前正式账单、客户、员工和型号；同一账单日期以服务器数据为准。本机独有记录会保留。"),
+                    message: Text("将合并服务器当前正式账单、客户和员工档案；同一账单日期以服务器数据为准。本机独有记录会保留。"),
                     primaryButton: .destructive(Text("确认恢复")) {
                         Task { await restoreLatest() }
                     },
@@ -74,6 +71,15 @@ struct CloudBackupView: View {
                     message: Text("快照：\(snapshot.fileName)\n\n将合并到本机，同一账单日期以该快照为准。服务器现有数据不会被立即覆盖。"),
                     primaryButton: .destructive(Text("恢复到本机")) {
                         Task { await restore(snapshot) }
+                    },
+                    secondaryButton: .cancel(Text("取消"))
+                )
+            case .confirmUnbind:
+                return Alert(
+                    title: Text("解除当前 iPad 绑定？"),
+                    message: Text("解除后这台 iPad 的登录令牌会立即失效。请把写入终端名额留给下一台设备；本机账号数据库也会从这台 iPad 删除。"),
+                    primaryButton: .destructive(Text("确认解绑")) {
+                        Task { await unbindDevice() }
                     },
                     secondaryButton: .cancel(Text("取消"))
                 )
@@ -113,7 +119,7 @@ struct CloudBackupView: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(AppTheme.textFaint)
                     Text("R\(store.cloudRevision)")
-                        .font(.system(size: 16, weight: .bold, design: .monospaced))
+                        .font(.system(size: 17, weight: .bold, design: .monospaced))
                         .foregroundColor(AppTheme.text)
                 }
             }
@@ -124,74 +130,91 @@ struct CloudBackupView: View {
     private var accountCard: some View {
         Panel {
             VStack(alignment: .leading, spacing: 16) {
-                HStack {
+                HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(store.isCloudLoggedIn ? "云端账号" : "登录云端账号")
+                        Text("当前账号与绑定设备")
                             .font(.system(size: 18, weight: .bold))
                             .foregroundColor(AppTheme.text)
-                        Text(store.isCloudLoggedIn ? "凭据保存在系统钥匙串，不写入业务数据库。" : "客户端账号只上传正式账单和客户、员工档案。")
+                        Text("写入终端名额由 iPad 与安卓共用；Windows 使用独立的只读名额。")
                             .font(.system(size: 12))
                             .foregroundColor(AppTheme.textMuted)
                     }
                     Spacer()
-                    if store.isCloudLoggedIn {
-                        Text("iPad 写权限")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(AppTheme.success)
-                            .padding(.horizontal, 10)
-                            .frame(height: 27)
-                            .background(Color(red: 0.93, green: 0.97, blue: 0.95))
-                            .clipShape(Capsule())
+                    Text(store.isReadOnly ? "只读宽限期" : "写入终端")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(store.isReadOnly ? AppTheme.danger : AppTheme.success)
+                        .padding(.horizontal, 10)
+                        .frame(height: 27)
+                        .background(store.isReadOnly ? AppTheme.dangerSoft : Color(red: 0.93, green: 0.97, blue: 0.95))
+                        .clipShape(Capsule())
+                }
+
+                HStack(spacing: 16) {
+                    infoCell(label: "车间名称", value: store.accountDisplayName)
+                    infoCell(label: "登录账号", value: store.cloudSession?.username ?? "—")
+                    infoCell(label: "服务器", value: store.cloudSession?.baseURL.absoluteString ?? "—")
+                }
+
+                HStack(spacing: 16) {
+                    infoCell(label: "当前设备", value: store.boundDevice?.displayName ?? "—")
+                    infoCell(label: "设备平台", value: platformLabel(store.boundDevice?.platform))
+                    infoCell(label: "设备代次", value: "G\(store.boundDevice?.leaseGeneration ?? 0)")
+                    infoCell(label: "账号状态", value: statusLabel(store.accountStatus))
+                }
+
+                if showPasswordForm {
+                    Divider().overlay(AppTheme.line)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("修改登录密码")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(AppTheme.text)
+                        HStack(spacing: 12) {
+                            passwordField("当前密码", text: $currentPassword)
+                            passwordField("新密码（至少 10 位）", text: $newPassword)
+                            passwordField("再次输入新密码", text: $confirmPassword)
+                        }
+                        if !passwordError.isEmpty {
+                            Text(passwordError)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(AppTheme.danger)
+                        }
+                        HStack {
+                            Spacer()
+                            Button("取消") {
+                                resetPasswordForm()
+                            }
+                            .buttonStyle(SecondaryButtonStyle())
+                            .disabled(isWorking)
+                            Button("保存新密码") {
+                                Task { await changePassword() }
+                            }
+                            .buttonStyle(PrimaryButtonStyle())
+                            .disabled(isWorking)
+                        }
                     }
                 }
 
-                if store.isCloudLoggedIn {
-                    HStack(spacing: 16) {
-                        infoCell(label: "账号", value: store.cloudSession?.username ?? store.savedUsername)
-                        infoCell(label: "服务器", value: store.cloudSession?.baseURL.absoluteString ?? store.savedBaseURLString)
-                        Spacer()
-                        Button("退出账号") {
-                            Task { await logout() }
-                        }
-                        .buttonStyle(SecondaryButtonStyle())
-                        .disabled(isWorking)
+                HStack(spacing: 12) {
+                    Button(showPasswordForm ? "收起修改密码" : "修改登录密码") {
+                        showPasswordForm.toggle()
+                        passwordError = ""
                     }
-                } else {
-                    HStack(spacing: 12) {
-                        fieldLabel("服务器地址") {
-                            TextField("https://ledger.893884474.xyz", text: $serverURL)
-                                .keyboardType(.URL)
-                                .textInputAutocapitalization(.never)
-                                .disableAutocorrection(true)
-                        }
-                        fieldLabel("客户端账号") {
-                            TextField("请输入客户端账号", text: $username)
-                                .textInputAutocapitalization(.never)
-                                .disableAutocorrection(true)
-                        }
-                        fieldLabel("客户端密码") {
-                            SecureField(store.hasSavedPassword ? "已保存，留空沿用" : "请输入客户端密码", text: $password)
-                        }
-                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(isWorking)
 
-                    HStack {
-                        Text("服务器账号与管理员后台账号相互独立。")
-                            .font(.system(size: 12))
-                            .foregroundColor(AppTheme.textFaint)
-                        Spacer()
-                        Button {
-                            Task { await login() }
-                        } label: {
-                            HStack(spacing: 8) {
-                                if isWorking {
-                                    ProgressView().scaleEffect(0.65)
-                                }
-                                Text(isWorking ? "正在连接…" : "登录并同步")
-                            }
-                        }
-                        .buttonStyle(PrimaryButtonStyle())
-                        .disabled(isWorking)
+                    Button("解除当前 iPad 绑定") {
+                        alertItem = .confirmUnbind
                     }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(isWorking)
+
+                    Spacer()
+
+                    Button("退出账号") {
+                        Task { await logout() }
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(isWorking)
                 }
             }
             .padding(20)
@@ -204,7 +227,7 @@ struct CloudBackupView: View {
                 Text("数据操作")
                     .font(.system(size: 18, weight: .bold))
                     .foregroundColor(AppTheme.text)
-                Text("提交账单后会自动上传。失败时会显示“待云端备份”，并每 30 秒自动重试。")
+                Text("提交账单后会自动上传。失败时显示“待云端备份”，并每 30 秒自动重试；账号只读时不会上传。")
                     .font(.system(size: 12))
                     .foregroundColor(AppTheme.textMuted)
 
@@ -218,7 +241,7 @@ struct CloudBackupView: View {
                         }
                     }
                     .buttonStyle(PrimaryButtonStyle())
-                    .disabled(isWorking)
+                    .disabled(isWorking || store.isReadOnly)
 
                     Button("从云端恢复当前数据") {
                         alertItem = .confirmLatest
@@ -241,7 +264,7 @@ struct CloudBackupView: View {
                         Text("最近 10 个成功快照")
                             .font(.system(size: 18, weight: .bold))
                             .foregroundColor(AppTheme.text)
-                        Text("每日凌晨 02:00 生成全量快照，按月保存在服务器。")
+                        Text("每日凌晨 02:00 生成全量快照，按月保存在服务器；服务器长期保留。")
                             .font(.system(size: 12))
                             .foregroundColor(AppTheme.textMuted)
                     }
@@ -308,12 +331,25 @@ struct CloudBackupView: View {
         .background(alternate ? AppTheme.surfaceSoft.opacity(0.7) : Color.white)
     }
 
-    private func fieldLabel<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+    private func infoCell(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(AppTheme.textFaint)
+            Text(value)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(AppTheme.text)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func passwordField(_ label: String, text: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label)
                 .font(.system(size: 11, weight: .bold))
                 .foregroundColor(AppTheme.textFaint)
-            content()
+            SecureField("", text: text)
                 .font(.system(size: 14))
                 .padding(.horizontal, 12)
                 .frame(height: 42)
@@ -327,50 +363,58 @@ struct CloudBackupView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func infoCell(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundColor(AppTheme.textFaint)
-            Text(value)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(AppTheme.text)
-                .lineLimit(1)
+    private func changePassword() async {
+        guard !isWorking else { return }
+        passwordError = ""
+        guard newPassword.count >= 10 else {
+            passwordError = "新密码至少需要 10 位。"
+            return
         }
-        .frame(minWidth: 180, alignment: .leading)
-    }
-
-    private func loadSavedFields() {
-        serverURL = store.cloudSession?.baseURL.absoluteString ?? store.savedBaseURLString
-        username = store.cloudSession?.username ?? store.savedUsername
-    }
-
-    private func login() async {
+        guard newPassword == confirmPassword else {
+            passwordError = "两次输入的新密码不一致。"
+            return
+        }
         isWorking = true
         defer { isWorking = false }
         do {
-            try await store.login(baseURLString: serverURL, username: username, password: password)
-            password = ""
-            serverURL = store.savedBaseURLString
-            username = store.savedUsername
-            await refreshSnapshots(showError: false)
-            if let error = store.lastCloudError {
-                alertItem = .message("已登录，但首次同步失败", error)
-            } else {
-                alertItem = .message("登录成功", "正式账单已上传云端。草稿仍只保留在本机。")
-            }
+            try await store.changePassword(currentPassword: currentPassword, newPassword: newPassword)
+            resetPasswordForm()
+            alertItem = .message("密码已修改", "其他设备上的旧登录会话已由服务器撤销。")
         } catch {
-            alertItem = .message("登录失败", error.localizedDescription)
+            passwordError = error.localizedDescription
         }
     }
 
+    private func resetPasswordForm() {
+        showPasswordForm = false
+        currentPassword = ""
+        newPassword = ""
+        confirmPassword = ""
+        passwordError = ""
+    }
+
     private func logout() async {
+        guard !isWorking else { return }
         isWorking = true
-        await store.logout()
-        isWorking = false
-        snapshots = []
-        password = ""
-        alertItem = .message("已退出云端账号", "本机账单不会删除；在重新登录前，新提交的正式账单会保持“待云端备份”。")
+        defer { isWorking = false }
+        let success = await store.logout()
+        if success {
+            snapshots = []
+        } else {
+            alertItem = .message("暂时不能退出", store.lastCloudError ?? "请先完成云端同步。")
+        }
+    }
+
+    private func unbindDevice() async {
+        guard !isWorking else { return }
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            try await store.unbindCurrentDevice()
+            snapshots = []
+        } catch {
+            alertItem = .message("解绑失败", error.localizedDescription)
+        }
     }
 
     private func forceSync() async {
@@ -379,7 +423,7 @@ struct CloudBackupView: View {
         isWorking = false
         if success {
             await refreshSnapshots(showError: false)
-            alertItem = .message("同步完成", "正式账单、客户和员工档案已备份到云端。")
+            alertItem = .message("同步完成", "正式账单、客户和员工档案已备份到当前账号。")
         } else {
             alertItem = .message("同步失败", store.lastCloudError ?? "请检查网络后重试。")
         }
@@ -424,6 +468,25 @@ struct CloudBackupView: View {
         }
     }
 
+    private func platformLabel(_ value: String?) -> String {
+        switch value {
+        case "ios": return "iPadOS"
+        case "android": return "Android"
+        case "windows": return "Windows"
+        default: return "—"
+        }
+    }
+
+    private func statusLabel(_ value: String) -> String {
+        switch value {
+        case "active": return "正常"
+        case "disabled": return "已停用 · 只读"
+        case "expired": return "已到期 · 只读"
+        case "deleted": return "已删除"
+        default: return value
+        }
+    }
+
     private func shortHash(_ value: String) -> String {
         String(value.prefix(10))
     }
@@ -433,12 +496,14 @@ private enum CloudAlertItem: Identifiable {
     case message(String, String)
     case confirmLatest
     case confirmSnapshot(RemoteSnapshotRecord)
+    case confirmUnbind
 
     var id: String {
         switch self {
         case .message(let title, _): return "message-\(title)"
         case .confirmLatest: return "confirm-latest"
         case .confirmSnapshot(let snapshot): return "confirm-snapshot-\(snapshot.id)"
+        case .confirmUnbind: return "confirm-unbind"
         }
     }
 }

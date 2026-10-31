@@ -10,10 +10,22 @@ enum CloudSyncState: Equatable {
 }
 
 struct CloudAccountSummary: Equatable {
+    let accountId: String
     let username: String
+    let displayName: String
     let baseURL: URL
     let expiresAt: Date?
     let scope: String
+    let canWrite: Bool
+    let status: String
+}
+
+struct CloudDeviceSummary: Equatable {
+    let id: String
+    let displayName: String
+    let slot: String
+    let platform: String
+    let leaseGeneration: Int
 }
 
 struct CloudRestoreResult: Equatable {
@@ -32,6 +44,10 @@ final class AppStore: ObservableObject {
 
     @Published private(set) var cloudState: CloudSyncState = .localOnly
     @Published private(set) var cloudSession: CloudAccountSummary?
+    @Published private(set) var boundDevice: CloudDeviceSummary?
+    @Published private(set) var mustChangePassword = false
+    @Published private(set) var accountCanWrite = true
+    @Published private(set) var accountStatus = "active"
     @Published private(set) var hasPendingCloudChanges = false
     @Published private(set) var pendingBillDates: Set<String> = []
     @Published private(set) var lastCloudSyncAt: Date?
@@ -39,7 +55,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var cloudRevision: Int = 0
     @Published private(set) var lastCloudError: String?
 
-    private let database: Database?
+    private var database: Database?
     private let remoteLedger: HTTPRemoteLedgerService
     private let defaults: UserDefaults
     private var activeSession: ActiveCloudSession?
@@ -50,14 +66,22 @@ final class AppStore: ObservableObject {
 
     private let baseURLKey = "workshopLedger.cloud.baseURL.v1"
     private let usernameKey = "workshopLedger.cloud.username.v1"
+    private let accountIdKey = "workshopLedger.cloud.accountId.v2"
+    private let displayNameKey = "workshopLedger.cloud.displayName.v2"
+    private let deviceIdKey = "workshopLedger.cloud.deviceId.v2"
+    private let deviceNameKey = "workshopLedger.cloud.deviceName.v2"
+    private let deviceLeaseKey = "workshopLedger.cloud.deviceLease.v2"
     private let expiresAtKey = "workshopLedger.cloud.expiresAt.v1"
+    private let mustChangeKey = "workshopLedger.cloud.mustChangePassword.v2"
+    private let canWriteKey = "workshopLedger.cloud.canWrite.v2"
+    private let accountStatusKey = "workshopLedger.cloud.accountStatus.v2"
     private let pendingKey = "workshopLedger.cloud.pending.v1"
     private let pendingDatesKey = "workshopLedger.cloud.pendingBillDates.v1"
     private let lastSyncKey = "workshopLedger.cloud.lastSyncAt.v1"
     private let snapshotNameKey = "workshopLedger.cloud.lastSnapshotName.v1"
     private let revisionKey = "workshopLedger.cloud.revision.v1"
     private let tokenAccount = "session-token"
-    private let passwordAccount = "account-password"
+    private let stableDeviceIdAccount = "stable-device-id"
 
     init(
         remoteLedger: HTTPRemoteLedgerService = HTTPRemoteLedgerService(),
@@ -65,14 +89,7 @@ final class AppStore: ObservableObject {
     ) {
         self.remoteLedger = remoteLedger
         self.defaults = defaults
-        do {
-            let database = try Database()
-            self.database = database
-            reloadAll()
-        } catch {
-            self.database = nil
-            self.lastError = error.localizedDescription
-        }
+        KeychainStore.delete("account-password")
         restoreLocalCloudMetadata()
         restoreStoredSession()
     }
@@ -85,14 +102,23 @@ final class AppStore: ObservableObject {
         defaults.string(forKey: usernameKey) ?? ""
     }
 
-    var hasSavedPassword: Bool {
-        KeychainStore.get(passwordAccount)?.isEmpty == false
-    }
+    var hasSavedPassword: Bool { false }
 
     var isCloudLoggedIn: Bool {
         activeSession != nil
     }
 
+    var isReadyForApp: Bool {
+        activeSession != nil && !mustChangePassword
+    }
+
+    var isReadOnly: Bool {
+        isCloudLoggedIn && !accountCanWrite
+    }
+
+    var accountDisplayName: String {
+        cloudSession?.displayName ?? "车间账本"
+    }
     var cloudBadgeText: String {
         if activeSession == nil {
             return hasPendingCloudChanges ? "待云端备份" : "本地账本"
@@ -174,6 +200,7 @@ final class AppStore: ObservableObject {
     }
 
     func saveDraft(date: Date, rows: [EntryRow]) {
+        guard accountCanWrite else { lastError = "账号当前为只读状态，不能保存草稿。"; return }
         guard let database else { return }
         do {
             try database.saveDraft(date: date, rows: rows)
@@ -184,6 +211,7 @@ final class AppStore: ObservableObject {
     }
 
     func deleteDraft(date: Date) {
+        guard accountCanWrite else { lastError = "账号当前为只读状态，不能修改草稿。"; return }
         guard let database else { return }
         do {
             try database.deleteDraft(date: date)
@@ -195,6 +223,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func submitBill(date: Date, rows: [EntryRow]) throws -> Bill {
+        try ensureWritable()
         guard let database else {
             throw DatabaseError.openFailed("数据库未打开")
         }
@@ -208,6 +237,7 @@ final class AppStore: ObservableObject {
     }
 
     func addCustomer(name: String) throws {
+        try ensureWritable()
         guard let database else { throw DatabaseError.openFailed("数据库未打开") }
         _ = try database.addCustomer(name: name)
         customers = try database.loadCustomers()
@@ -215,6 +245,7 @@ final class AppStore: ObservableObject {
     }
 
     func updateCustomer(_ customer: Customer, name: String) throws {
+        try ensureWritable()
         guard let database else { throw DatabaseError.openFailed("数据库未打开") }
         try database.updateCustomer(id: customer.id, name: name)
         customers = try database.loadCustomers()
@@ -222,6 +253,7 @@ final class AppStore: ObservableObject {
     }
 
     func deleteCustomer(_ customer: Customer) throws {
+        try ensureWritable()
         guard let database else { throw DatabaseError.openFailed("数据库未打开") }
         try database.deleteCustomer(id: customer.id)
         customers = try database.loadCustomers()
@@ -229,6 +261,7 @@ final class AppStore: ObservableObject {
     }
 
     func addEmployee(name: String) throws {
+        try ensureWritable()
         guard let database else { throw DatabaseError.openFailed("数据库未打开") }
         _ = try database.addEmployee(name: name)
         employees = try database.loadEmployees()
@@ -236,6 +269,7 @@ final class AppStore: ObservableObject {
     }
 
     func updateEmployee(_ employee: Employee, name: String) throws {
+        try ensureWritable()
         guard let database else { throw DatabaseError.openFailed("数据库未打开") }
         try database.updateEmployee(id: employee.id, name: name)
         employees = try database.loadEmployees()
@@ -243,6 +277,7 @@ final class AppStore: ObservableObject {
     }
 
     func deleteEmployee(_ employee: Employee) throws {
+        try ensureWritable()
         guard let database else { throw DatabaseError.openFailed("数据库未打开") }
         try database.deleteEmployee(id: employee.id)
         employees = try database.loadEmployees()
@@ -315,97 +350,177 @@ final class AppStore: ObservableObject {
         pendingBillDates.contains(DateKey.string(from: date))
     }
 
-    // MARK: - Cloud account
+}
+
+
+extension AppStore {
+    private struct ActiveCloudSession {
+        let accountId: String
+        let username: String
+        let displayName: String
+        let baseURL: URL
+        let token: String
+        let expiresAt: Date?
+        let scope: String
+        let deviceId: String
+        let deviceName: String
+        let leaseGeneration: Int
+        let status: String
+        let canWrite: Bool
+    }
 
     func login(baseURLString: String, username: String, password: String) async throws {
         let normalizedURL = try normalizeBaseURL(baseURLString)
         let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hadPendingCloudChanges = hasPendingCloudChanges
         guard !normalizedUsername.isEmpty else {
-            throw RemoteLedgerError.server(status: 400, message: "请输入客户端账号。")
+            throw RemoteLedgerError.server(status: 400, message: "请输入账号。", code: "username_required")
         }
-        let effectivePassword: String
-        if password.isEmpty, let saved = KeychainStore.get(passwordAccount), !saved.isEmpty {
-            effectivePassword = saved
-        } else {
-            effectivePassword = password
+        guard !password.isEmpty else {
+            throw RemoteLedgerError.server(status: 400, message: "请输入密码。", code: "password_required")
         }
-        guard !effectivePassword.isEmpty else {
-            throw RemoteLedgerError.server(status: 400, message: "请输入客户端密码。")
-        }
-
+        let deviceId = stableDeviceId()
+        let deviceName = storedDeviceName()
         let response = try await remoteLedger.login(
             baseURL: normalizedURL,
             username: normalizedUsername,
-            password: effectivePassword,
-            clientType: CloudDefaults.clientType
+            password: password,
+            clientType: CloudDefaults.clientType,
+            deviceId: deviceId,
+            deviceName: deviceName
         )
-        let expiresAt = CloudDate.parse(response.expiresAt)
+        let tokenExpiresAt = CloudDate.parse(response.expiresAt)
         let session = ActiveCloudSession(
-            username: response.username,
+            accountId: response.account.id,
+            username: response.account.loginName,
+            displayName: response.account.displayName,
             baseURL: normalizedURL,
             token: response.token,
-            expiresAt: expiresAt,
-            scope: response.scope
+            expiresAt: tokenExpiresAt,
+            scope: response.scope,
+            deviceId: response.device.id,
+            deviceName: response.device.displayName,
+            leaseGeneration: response.device.leaseGeneration,
+            status: response.access.effectiveStatus,
+            canWrite: response.access.canWrite && response.scope == "write"
         )
-        activeSession = session
-        cloudSession = summary(for: session)
-        KeychainStore.set(response.token, for: tokenAccount)
-        KeychainStore.set(effectivePassword, for: passwordAccount)
-        defaults.set(normalizedURL.absoluteString, forKey: baseURLKey)
-        defaults.set(response.username, forKey: usernameKey)
-        if let expiresAt {
-            defaults.set(expiresAt.timeIntervalSince1970, forKey: expiresAtKey)
-        }
-        lastCloudError = nil
-        cloudState = hasPendingCloudChanges ? .pending : .synced
 
-        let remote = try await authorizedWorkspace()
-        cloudRevision = remote.revision
-        lastCloudSnapshotName = remote.latestSnapshot?.fileName ?? lastCloudSnapshotName
-        let remoteHasData = remote.revision > 0 &&
-            (!remote.data.bills.isEmpty || !remote.data.customers.isEmpty || !remote.data.employees.isEmpty)
-        if remoteHasData {
-            _ = try merge(remote.data)
+        let previousAccountId = defaults.string(forKey: accountIdKey)
+        if let previousAccountId, previousAccountId != response.account.id {
+            hasPendingCloudChanges = false
+            pendingBillDates.removeAll()
+            persistPendingState()
+            lastCloudSyncAt = nil
+            lastCloudSnapshotName = nil
+            cloudRevision = 0
         }
 
-        let localHasData = !customers.isEmpty || !employees.isEmpty || !bills.isEmpty
-        if hadPendingCloudChanges || (remote.revision == 0 && localHasData) {
-            if !hadPendingCloudChanges {
-                markCloudDirty()
+        do {
+            database = try Database(accountId: response.account.id)
+            reloadAll()
+            activeSession = session
+            apply(account: response.account, device: response.device, access: response.access)
+            mustChangePassword = response.mustChangePassword
+            KeychainStore.set(response.token, for: tokenAccount)
+            persistSessionMetadata()
+            lastCloudError = nil
+            cloudState = hasPendingCloudChanges ? .pending : .synced
+            if response.mustChangePassword {
+                return
             }
-            _ = await syncNow(force: true)
-        } else {
-            markCloudClean()
-            cloudState = .synced
+            try await finishAuthenticatedLogin()
+        } catch {
+            if activeSession?.token == response.token {
+                await remoteLedger.logout(baseURL: normalizedURL, token: response.token)
+            }
+            clearLocalSession(deleteDatabase: false)
+            throw error
         }
     }
 
-    func logout() async {
+    func completeRequiredPasswordChange(currentPassword: String, newPassword: String) async throws {
+        guard let session = activeSession, mustChangePassword else {
+            throw RemoteLedgerError.unauthorized
+        }
+        let response = try await remoteLedger.changePassword(
+            baseURL: session.baseURL,
+            token: session.token,
+            currentPassword: currentPassword,
+            newPassword: newPassword
+        )
+        mustChangePassword = response.mustChangePassword
+        apply(account: response.account, device: nil, access: response.access)
+        persistSessionMetadata()
+        guard !mustChangePassword else { return }
+        try await finishAuthenticatedLogin()
+    }
+
+    func changePassword(currentPassword: String, newPassword: String) async throws {
+        guard let session = activeSession, !mustChangePassword else {
+            throw RemoteLedgerError.unauthorized
+        }
+        let response = try await remoteLedger.changePassword(
+            baseURL: session.baseURL,
+            token: session.token,
+            currentPassword: currentPassword,
+            newPassword: newPassword
+        )
+        mustChangePassword = response.mustChangePassword
+        apply(account: response.account, device: nil, access: response.access)
+        persistSessionMetadata()
+    }
+
+    @discardableResult
+    func logout(force: Bool = false) async -> Bool {
+        if hasPendingCloudChanges && !force {
+            lastCloudError = "还有正式账单没有备份成功。请先同步，或确认放弃本机待同步数据后再退出。"
+            return false
+        }
         retryTask?.cancel()
-        if let activeSession {
-            await remoteLedger.logout(baseURL: activeSession.baseURL, token: activeSession.token)
+        retryTask = nil
+        let session = activeSession
+        let accountId = session?.accountId
+        if let session {
+            await remoteLedger.logout(baseURL: session.baseURL, token: session.token)
         }
-        activeSession = nil
-        cloudSession = nil
-        KeychainStore.delete(tokenAccount)
-        KeychainStore.delete(passwordAccount)
-        defaults.removeObject(forKey: expiresAtKey)
-        lastCloudError = nil
-        cloudState = .localOnly
+        clearLocalSession(deleteDatabase: true, accountId: accountId)
+        return true
     }
 
+    func unbindCurrentDevice() async throws {
+        guard let session = activeSession else {
+            throw RemoteLedgerError.unauthorized
+        }
+        if hasPendingCloudChanges {
+            throw RemoteLedgerError.server(
+                status: 409,
+                message: "本机还有未备份的正式账单，请先同步后再解绑设备。",
+                code: "pending_changes"
+            )
+        }
+        try await remoteLedger.unbindDevice(
+            baseURL: session.baseURL,
+            token: session.token,
+            deviceId: session.deviceId
+        )
+        clearLocalSession(deleteDatabase: true, accountId: session.accountId)
+    }
+
+    func listCloudDevices() async throws -> [RemoteDeviceRecord] {
+        let session = try await validSession()
+        do {
+            return try await remoteLedger.listDevices(baseURL: session.baseURL, token: session.token)
+        } catch RemoteLedgerError.unauthorized {
+            invalidateSession(reason: "设备绑定已失效，请重新登录。")
+            throw RemoteLedgerError.unauthorized
+        }
+    }
     func applicationBecameActive() async {
-        guard !didStartCloud else {
-            if activeSession != nil {
-                await refreshCloudStatus()
-            }
+        guard isReadyForApp else {
+            if !isCloudLoggedIn { cloudState = .localOnly }
             return
         }
-        didStartCloud = true
-        guard activeSession != nil else {
-            cloudState = .localOnly
-            return
+        if !didStartCloud {
+            didStartCloud = true
         }
         if hasPendingCloudChanges {
             _ = await syncNow(force: true)
@@ -416,9 +531,19 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func syncNow(force: Bool = false) async -> Bool {
+        guard !mustChangePassword else {
+            lastCloudError = "请先修改临时密码。"
+            return false
+        }
+        guard accountCanWrite else {
+            lastCloudError = "账号当前为只读状态，不能上传数据。"
+            cloudState = .failed(lastCloudError ?? "只读状态")
+            return false
+        }
         guard force || hasPendingCloudChanges else {
             await refreshCloudStatus()
-            return cloudState != .failed("")
+            if case .failed = cloudState { return false }
+            return true
         }
         guard activeSession != nil else {
             cloudState = .localOnly
@@ -429,7 +554,6 @@ final class AppStore: ObservableObject {
             cloudState = .failed(lastCloudError ?? "本机数据库未打开")
             return false
         }
-
         guard !syncInFlight else { return false }
         retryTask?.cancel()
         retryTask = nil
@@ -456,18 +580,21 @@ final class AppStore: ObservableObject {
             let message = friendlyCloudError(error)
             lastCloudError = message
             cloudState = .failed(message)
-            scheduleRetry(after: 30)
+            if activeSession != nil && accountCanWrite {
+                scheduleRetry(after: 30)
+            }
             return false
         }
     }
 
     func refreshCloudStatus() async {
-        guard activeSession != nil else {
+        guard activeSession != nil, !mustChangePassword else {
             cloudState = .localOnly
             return
         }
         do {
             let remote = try await authorizedWorkspace()
+            applyRemoteWorkspace(remote)
             cloudRevision = remote.revision
             lastCloudSnapshotName = remote.latestSnapshot?.fileName ?? lastCloudSnapshotName
             if !hasPendingCloudChanges {
@@ -484,6 +611,7 @@ final class AppStore: ObservableObject {
     func restoreLatestWorkspace() async throws -> CloudRestoreResult {
         let hadPendingCloudChanges = hasPendingCloudChanges
         let remote = try await authorizedWorkspace()
+        applyRemoteWorkspace(remote)
         let merged = try merge(remote.data)
         cloudRevision = remote.revision
         lastCloudSnapshotName = remote.latestSnapshot?.fileName ?? lastCloudSnapshotName
@@ -514,6 +642,9 @@ final class AppStore: ObservableObject {
     func restoreSnapshot(_ snapshot: RemoteSnapshotRecord) async throws -> CloudRestoreResult {
         let hadPendingCloudChanges = hasPendingCloudChanges
         let envelope = try await authorizedSnapshot(id: snapshot.id)
+        guard envelope.accountId == nil || envelope.accountId == activeSession?.accountId else {
+            throw RemoteLedgerError.server(status: 409, message: "该快照不属于当前账号。", code: "snapshot_account_mismatch")
+        }
         let merged = try merge(envelope.data)
         cloudRevision = envelope.revision
         lastCloudSnapshotName = snapshot.fileName
@@ -531,19 +662,169 @@ final class AppStore: ObservableObject {
             sourceLabel: snapshot.fileName
         )
     }
+    private func finishAuthenticatedLogin() async throws {
+        guard !mustChangePassword else { return }
+        let hadPendingCloudChanges = hasPendingCloudChanges
+        let remote = try await authorizedWorkspace()
+        applyRemoteWorkspace(remote)
+        cloudRevision = remote.revision
+        lastCloudSnapshotName = remote.latestSnapshot?.fileName ?? lastCloudSnapshotName
 
-    // MARK: - Cloud internals
+        let remoteHasData = remote.revision > 0 &&
+            (!remote.data.bills.isEmpty || !remote.data.customers.isEmpty || !remote.data.employees.isEmpty)
+        if remoteHasData {
+            _ = try merge(remote.data)
+        }
 
-    private struct ActiveCloudSession {
-        let username: String
-        let baseURL: URL
-        let token: String
-        let expiresAt: Date?
-        let scope: String
+        let localHasData = !customers.isEmpty || !employees.isEmpty || !bills.isEmpty
+        if hadPendingCloudChanges || (remote.revision == 0 && localHasData) {
+            if !hadPendingCloudChanges {
+                markCloudDirty()
+            }
+            _ = await syncNow(force: true)
+        } else {
+            markCloudClean()
+            cloudState = .synced
+        }
+        lastCloudSyncAt = lastCloudSyncAt ?? Date()
+        persistCloudMetadata()
+        didStartCloud = true
+    }
+
+    private func validSession() async throws -> ActiveCloudSession {
+        guard let activeSession else {
+            throw RemoteLedgerError.unauthorized
+        }
+        if let expiresAt = activeSession.expiresAt, expiresAt <= Date() {
+            invalidateSession(reason: "登录已过期，请重新输入账号密码。")
+            throw RemoteLedgerError.unauthorized
+        }
+        return activeSession
+    }
+
+    private func authorizedWorkspace() async throws -> RemoteWorkspaceResponse {
+        let session = try await validSession()
+        do {
+            let remote = try await remoteLedger.fetchWorkspace(baseURL: session.baseURL, token: session.token)
+            return remote
+        } catch RemoteLedgerError.unauthorized {
+            invalidateSession(reason: "登录已失效或设备已被解绑，请重新登录。")
+            throw RemoteLedgerError.unauthorized
+        }
+    }
+
+    private func authorizedSave(_ data: RemoteWorkshopData) async throws -> RemoteSaveResponse {
+        let session = try await validSession()
+        do {
+            return try await remoteLedger.saveWorkspace(baseURL: session.baseURL, token: session.token, data: data)
+        } catch RemoteLedgerError.unauthorized {
+            invalidateSession(reason: "登录已失效或设备已被解绑，请重新登录。")
+            throw RemoteLedgerError.unauthorized
+        }
+    }
+
+    private func authorizedSnapshots() async throws -> [RemoteSnapshotRecord] {
+        let session = try await validSession()
+        do {
+            return try await remoteLedger.listSnapshots(baseURL: session.baseURL, token: session.token)
+        } catch RemoteLedgerError.unauthorized {
+            invalidateSession(reason: "登录已失效或设备已被解绑，请重新登录。")
+            throw RemoteLedgerError.unauthorized
+        }
+    }
+
+    private func authorizedSnapshot(id: Int) async throws -> RemoteSnapshotEnvelope {
+        let session = try await validSession()
+        do {
+            return try await remoteLedger.fetchSnapshot(baseURL: session.baseURL, token: session.token, id: id)
+        } catch RemoteLedgerError.unauthorized {
+            invalidateSession(reason: "登录已失效或设备已被解绑，请重新登录。")
+            throw RemoteLedgerError.unauthorized
+        }
+    }
+
+    private func apply(account: RemoteAccountRecord, device: RemoteDeviceRecord?, access: RemoteAccessRecord) {
+        let currentTokenExpiry = activeSession?.expiresAt
+        let scope = access.canWrite && activeSession?.scope == "write" ? "write" : "read"
+        let currentDeviceId = device?.id ?? activeSession?.deviceId ?? stableDeviceId()
+        let currentDeviceName = device?.displayName ?? activeSession?.deviceName ?? storedDeviceName()
+        activeSession = ActiveCloudSession(
+            accountId: account.id,
+            username: account.loginName,
+            displayName: account.displayName,
+            baseURL: activeSession?.baseURL ?? URL(string: savedBaseURLString) ?? URL(string: CloudDefaults.baseURL)!,
+            token: activeSession?.token ?? KeychainStore.get(tokenAccount) ?? "",
+            expiresAt: currentTokenExpiry,
+            scope: scope,
+            deviceId: currentDeviceId,
+            deviceName: currentDeviceName,
+            leaseGeneration: device?.leaseGeneration ?? activeSession?.leaseGeneration ?? 1,
+            status: access.effectiveStatus,
+            canWrite: access.canWrite && scope == "write"
+        )
+        accountCanWrite = activeSession?.canWrite ?? false
+        accountStatus = access.effectiveStatus
+        mustChangePassword = account.mustChangePassword
+        if let activeSession {
+            cloudSession = summary(for: activeSession)
+        }
+        if let device {
+            boundDevice = CloudDeviceSummary(
+                id: device.id,
+                displayName: device.displayName,
+                slot: device.slot,
+                platform: device.platform,
+                leaseGeneration: device.leaseGeneration
+            )
+            defaults.set(device.displayName, forKey: deviceNameKey)
+            defaults.set(device.leaseGeneration, forKey: deviceLeaseKey)
+        }
+    }
+
+    private func applyRemoteWorkspace(_ remote: RemoteWorkspaceResponse) {
+        if let account = remote.account, let access = remote.access {
+            apply(account: account, device: remote.device, access: access)
+        } else if let access = remote.access {
+            accountCanWrite = access.canWrite && activeSession?.scope == "write"
+            accountStatus = access.effectiveStatus
+            if var session = activeSession {
+                session = ActiveCloudSession(
+                    accountId: session.accountId,
+                    username: session.username,
+                    displayName: session.displayName,
+                    baseURL: session.baseURL,
+                    token: session.token,
+                    expiresAt: session.expiresAt,
+                    scope: session.scope,
+                    deviceId: session.deviceId,
+                    deviceName: session.deviceName,
+                    leaseGeneration: session.leaseGeneration,
+                    status: access.effectiveStatus,
+                    canWrite: access.canWrite && session.scope == "write"
+                )
+                activeSession = session
+                cloudSession = summary(for: session)
+            }
+        }
+        persistSessionMetadata()
+    }
+
+    private func summary(for session: ActiveCloudSession) -> CloudAccountSummary {
+        CloudAccountSummary(
+            accountId: session.accountId,
+            username: session.username,
+            displayName: session.displayName,
+            baseURL: session.baseURL,
+            expiresAt: session.expiresAt,
+            scope: session.scope,
+            canWrite: session.canWrite,
+            status: session.status
+        )
     }
 
     private func restoreStoredSession() {
         guard let token = KeychainStore.get(tokenAccount), !token.isEmpty,
+              let accountId = defaults.string(forKey: accountIdKey), !accountId.isEmpty,
               let baseURLString = defaults.string(forKey: baseURLKey),
               let baseURL = URL(string: baseURLString),
               let username = defaults.string(forKey: usernameKey), !username.isEmpty else {
@@ -555,25 +836,129 @@ final class AppStore: ObservableObject {
             KeychainStore.delete(tokenAccount)
             return
         }
-        let session = ActiveCloudSession(
-            username: username,
-            baseURL: baseURL,
-            token: token,
-            expiresAt: expiresAt,
-            scope: "write"
-        )
-        activeSession = session
-        cloudSession = summary(for: session)
-        cloudState = hasPendingCloudChanges ? .pending : .synced
+        do {
+            database = try Database(accountId: accountId)
+            let canWrite = defaults.bool(forKey: canWriteKey)
+            let session = ActiveCloudSession(
+                accountId: accountId,
+                username: username,
+                displayName: defaults.string(forKey: displayNameKey) ?? username,
+                baseURL: baseURL,
+                token: token,
+                expiresAt: expiresAt,
+                scope: canWrite ? "write" : "read",
+                deviceId: KeychainStore.get(stableDeviceIdAccount) ?? "",
+                deviceName: defaults.string(forKey: deviceNameKey) ?? storedDeviceName(),
+                leaseGeneration: defaults.integer(forKey: deviceLeaseKey),
+                status: defaults.string(forKey: accountStatusKey) ?? "active",
+                canWrite: canWrite
+            )
+            activeSession = session
+            cloudSession = summary(for: session)
+            mustChangePassword = defaults.bool(forKey: mustChangeKey)
+            accountCanWrite = canWrite
+            accountStatus = session.status
+            if let deviceId = KeychainStore.get(stableDeviceIdAccount) {
+                boundDevice = CloudDeviceSummary(
+                    id: deviceId,
+                    displayName: session.deviceName,
+                    slot: "writer",
+                    platform: CloudDefaults.clientType,
+                    leaseGeneration: session.leaseGeneration
+                )
+            }
+            reloadAll()
+            cloudState = hasPendingCloudChanges ? .pending : .synced
+        } catch {
+            lastError = error.localizedDescription
+            invalidateSession(reason: "本机数据库无法打开：\(error.localizedDescription)")
+        }
     }
 
-    private func summary(for session: ActiveCloudSession) -> CloudAccountSummary {
-        CloudAccountSummary(
-            username: session.username,
-            baseURL: session.baseURL,
-            expiresAt: session.expiresAt,
-            scope: session.scope
-        )
+    private func persistSessionMetadata() {
+        guard let session = activeSession else { return }
+        defaults.set(session.baseURL.absoluteString, forKey: baseURLKey)
+        defaults.set(session.username, forKey: usernameKey)
+        defaults.set(session.accountId, forKey: accountIdKey)
+        defaults.set(session.displayName, forKey: displayNameKey)
+        defaults.set(session.deviceName, forKey: deviceNameKey)
+        defaults.set(session.leaseGeneration, forKey: deviceLeaseKey)
+        defaults.set(session.status, forKey: accountStatusKey)
+        defaults.set(session.canWrite, forKey: canWriteKey)
+        defaults.set(mustChangePassword, forKey: mustChangeKey)
+        if let expiresAt = session.expiresAt {
+            defaults.set(expiresAt.timeIntervalSince1970, forKey: expiresAtKey)
+        }
+    }
+
+    private func clearSessionMetadata() {
+        KeychainStore.delete(tokenAccount)
+        defaults.removeObject(forKey: accountIdKey)
+        defaults.removeObject(forKey: displayNameKey)
+        defaults.removeObject(forKey: expiresAtKey)
+        defaults.removeObject(forKey: mustChangeKey)
+        defaults.removeObject(forKey: canWriteKey)
+        defaults.removeObject(forKey: accountStatusKey)
+    }
+
+    private func clearLocalSession(deleteDatabase: Bool, accountId: String? = nil) {
+        retryTask?.cancel()
+        retryTask = nil
+        let targetAccountId = accountId ?? activeSession?.accountId ?? defaults.string(forKey: accountIdKey)
+        activeSession = nil
+        cloudSession = nil
+        boundDevice = nil
+        mustChangePassword = false
+        accountCanWrite = false
+        accountStatus = "active"
+        clearSessionMetadata()
+        hasPendingCloudChanges = false
+        pendingBillDates.removeAll()
+        persistPendingState()
+        lastCloudSyncAt = nil
+        lastCloudSnapshotName = nil
+        cloudRevision = 0
+        lastCloudError = nil
+        cloudState = .localOnly
+        database = nil
+        customers = []
+        employees = []
+        bills = []
+        drafts = []
+        defaults.removeObject(forKey: snapshotNameKey)
+        defaults.removeObject(forKey: revisionKey)
+        defaults.removeObject(forKey: lastSyncKey)
+        if deleteDatabase, let targetAccountId {
+            try? Database.deleteAccountDatabase(accountId: targetAccountId)
+        }
+    }
+
+    private func invalidateSession(reason: String) {
+        retryTask?.cancel()
+        retryTask = nil
+        activeSession = nil
+        cloudSession = nil
+        boundDevice = nil
+        mustChangePassword = false
+        accountCanWrite = false
+        accountStatus = "active"
+        KeychainStore.delete(tokenAccount)
+        defaults.removeObject(forKey: accountIdKey)
+        defaults.removeObject(forKey: displayNameKey)
+        defaults.removeObject(forKey: expiresAtKey)
+        defaults.removeObject(forKey: mustChangeKey)
+        defaults.removeObject(forKey: canWriteKey)
+        cloudState = .localOnly
+        lastCloudError = reason
+        lastError = reason
+    }
+    private func ensureWritable() throws {
+        if mustChangePassword {
+            throw RemoteLedgerError.server(status: 428, message: "请先修改临时密码。", code: "password_change_required")
+        }
+        guard accountCanWrite else {
+            throw RemoteLedgerError.server(status: 403, message: "账号当前为只读状态，不能修改账目。", code: "read_only")
+        }
     }
 
     private func normalizeBaseURL(_ value: String) throws -> URL {
@@ -584,89 +969,23 @@ final class AppStore: ObservableObject {
         }
         let isLocal = host == "localhost" || host == "127.0.0.1"
         guard scheme == "https" || (scheme == "http" && isLocal) else {
-            throw RemoteLedgerError.server(status: 400, message: "公网服务器必须使用 HTTPS 地址。")
+            throw RemoteLedgerError.server(status: 400, message: "公网服务器必须使用 HTTPS 地址。", code: "https_required")
         }
         return url
     }
 
-    private func authorizedWorkspace() async throws -> RemoteWorkspaceResponse {
-        let session = try await validSession()
-        do {
-            return try await remoteLedger.fetchWorkspace(baseURL: session.baseURL, token: session.token)
-        } catch RemoteLedgerError.unauthorized {
-            let refreshed = try await relogin()
-            return try await remoteLedger.fetchWorkspace(baseURL: refreshed.baseURL, token: refreshed.token)
+    private func stableDeviceId() -> String {
+        if let existing = KeychainStore.get(stableDeviceIdAccount), !existing.isEmpty {
+            return existing
         }
+        let created = "ios-\(UUID().uuidString)"
+        KeychainStore.set(created, for: stableDeviceIdAccount)
+        return created
     }
 
-    private func authorizedSave(_ data: RemoteWorkshopData) async throws -> RemoteSaveResponse {
-        let session = try await validSession()
-        do {
-            return try await remoteLedger.saveWorkspace(baseURL: session.baseURL, token: session.token, data: data)
-        } catch RemoteLedgerError.unauthorized {
-            let refreshed = try await relogin()
-            return try await remoteLedger.saveWorkspace(baseURL: refreshed.baseURL, token: refreshed.token, data: data)
-        }
-    }
-
-    private func authorizedSnapshots() async throws -> [RemoteSnapshotRecord] {
-        let session = try await validSession()
-        do {
-            return try await remoteLedger.listSnapshots(baseURL: session.baseURL, token: session.token)
-        } catch RemoteLedgerError.unauthorized {
-            let refreshed = try await relogin()
-            return try await remoteLedger.listSnapshots(baseURL: refreshed.baseURL, token: refreshed.token)
-        }
-    }
-
-    private func authorizedSnapshot(id: Int) async throws -> RemoteSnapshotEnvelope {
-        let session = try await validSession()
-        do {
-            return try await remoteLedger.fetchSnapshot(baseURL: session.baseURL, token: session.token, id: id)
-        } catch RemoteLedgerError.unauthorized {
-            let refreshed = try await relogin()
-            return try await remoteLedger.fetchSnapshot(baseURL: refreshed.baseURL, token: refreshed.token, id: id)
-        }
-    }
-
-    private func validSession() async throws -> ActiveCloudSession {
-        guard let activeSession else {
-            throw RemoteLedgerError.unauthorized
-        }
-        if let expiresAt = activeSession.expiresAt, expiresAt <= Date() {
-            return try await relogin()
-        }
-        return activeSession
-    }
-
-    private func relogin() async throws -> ActiveCloudSession {
-        guard let username = defaults.string(forKey: usernameKey), !username.isEmpty,
-              let baseURLString = defaults.string(forKey: baseURLKey),
-              let password = KeychainStore.get(passwordAccount), !password.isEmpty else {
-            throw RemoteLedgerError.unauthorized
-        }
-        let baseURL = try normalizeBaseURL(baseURLString)
-        let response = try await remoteLedger.login(
-            baseURL: baseURL,
-            username: username,
-            password: password,
-            clientType: CloudDefaults.clientType
-        )
-        let expiresAt = CloudDate.parse(response.expiresAt)
-        let session = ActiveCloudSession(
-            username: response.username,
-            baseURL: baseURL,
-            token: response.token,
-            expiresAt: expiresAt,
-            scope: response.scope
-        )
-        activeSession = session
-        cloudSession = summary(for: session)
-        KeychainStore.set(response.token, for: tokenAccount)
-        if let expiresAt {
-            defaults.set(expiresAt.timeIntervalSince1970, forKey: expiresAtKey)
-        }
-        return session
+    private func storedDeviceName() -> String {
+        let value = defaults.string(forKey: deviceNameKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? "车间 iPad" : value
     }
 
     private func buildRemoteWorkshopData() -> RemoteWorkshopData? {
@@ -719,6 +1038,7 @@ final class AppStore: ObservableObject {
     }
 
     private func markCloudDirty(billDate: Date? = nil) {
+        guard accountCanWrite, !mustChangePassword else { return }
         cloudChangeGeneration &+= 1
         hasPendingCloudChanges = true
         if let billDate {
@@ -740,7 +1060,7 @@ final class AppStore: ObservableObject {
     }
 
     private func scheduleRetry(after seconds: UInt64) {
-        guard activeSession != nil else { return }
+        guard activeSession != nil, accountCanWrite, !mustChangePassword else { return }
         retryTask?.cancel()
         retryTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
@@ -773,9 +1093,21 @@ final class AppStore: ObservableObject {
         }
         defaults.set(lastCloudSnapshotName, forKey: snapshotNameKey)
         defaults.set(cloudRevision, forKey: revisionKey)
+        persistSessionMetadata()
     }
 
     private func friendlyCloudError(_ error: Error) -> String {
+        if let remote = error as? RemoteLedgerError {
+            if remote.errorCode == "writer_device_bound" {
+                return "该账号已绑定另一台写入终端。请先在原设备解绑，或联系平台管理员紧急解绑。"
+            }
+            if remote.errorCode == "windows_device_bound" {
+                return "该账号已绑定另一台 Windows 终端。请先解除原电脑绑定。"
+            }
+            if let message = remote.errorDescription {
+                return message
+            }
+        }
         if let localized = error as? LocalizedError, let message = localized.errorDescription {
             return message
         }

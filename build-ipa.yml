@@ -13,6 +13,9 @@ on:
 permissions:
   contents: read
 
+env:
+  APP_VERSION: "1.2.0"
+
 jobs:
   build:
     runs-on: macos-14
@@ -54,6 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           APP_PATH="build/Build/Products/Release-iphoneos/WorkshopLedger.app"
+          IPA_NAME="WorkshopLedger-v${APP_VERSION}-iOS-arm64-unsigned.ipa"
           test -d "$APP_PATH"
           test -f "$APP_PATH/WorkshopLedger"
           lipo -info "$APP_PATH/WorkshopLedger"
@@ -62,17 +66,17 @@ jobs:
           rm -rf Payload
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
-          zip -qry WorkshopLedger-iOS-arm64-unsigned.ipa Payload
-          unzip -l WorkshopLedger-iOS-arm64-unsigned.ipa
-          shasum -a 256 WorkshopLedger-iOS-arm64-unsigned.ipa > SHA256SUMS.txt
+          zip -qry "$IPA_NAME" Payload
+          unzip -l "$IPA_NAME"
+          shasum -a 256 "$IPA_NAME" > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WorkshopLedger-iOS-arm64-unsigned
+          name: WorkshopLedger-v${{ env.APP_VERSION }}-iOS-arm64-unsigned
           path: |
-            WorkshopLedger-iOS-arm64-unsigned.ipa
+            WorkshopLedger-v1.2.0-iOS-arm64-unsigned.ipa
             SHA256SUMS.txt
           if-no-files-found: error
 

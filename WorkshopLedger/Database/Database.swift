@@ -24,11 +24,25 @@ final class Database {
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     private let databaseURL: URL
 
-    init() throws {
+    init(accountId: String? = nil) throws {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("WorkshopLedger", isDirectory: true)
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        let databaseURL = support.appendingPathComponent("workshop-ledger.sqlite3")
+
+        let databaseURL: URL
+        if let accountId {
+            let accountsRoot = support.appendingPathComponent("accounts", isDirectory: true)
+            let accountRoot = accountsRoot.appendingPathComponent(Self.safeAccountDirectoryName(accountId), isDirectory: true)
+            try FileManager.default.createDirectory(at: accountRoot, withIntermediateDirectories: true)
+            databaseURL = accountRoot.appendingPathComponent("workshop-ledger.sqlite3")
+            try Self.importLegacyDatabaseIfNeeded(
+                accountId: accountId,
+                supportRoot: support,
+                destinationURL: databaseURL
+            )
+        } else {
+            databaseURL = support.appendingPathComponent("workshop-ledger.sqlite3")
+        }
         self.databaseURL = databaseURL
 
         if sqlite3_open(databaseURL.path, &db) != SQLITE_OK {
@@ -42,6 +56,72 @@ final class Database {
         try migrate()
     }
 
+    private static func safeAccountDirectoryName(_ accountId: String) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        guard !accountId.isEmpty,
+              accountId.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            return "invalid-account"
+        }
+        return accountId
+    }
+
+    private static func importLegacyDatabaseIfNeeded(
+        accountId: String,
+        supportRoot: URL,
+        destinationURL: URL
+    ) throws {
+        let fileManager = FileManager.default
+        let legacyURL = supportRoot.appendingPathComponent("workshop-ledger.sqlite3")
+        let accountsRoot = supportRoot.appendingPathComponent("accounts", isDirectory: true)
+        let markerURL = accountsRoot.appendingPathComponent(".legacy-imported-account")
+        guard !fileManager.fileExists(atPath: destinationURL.path),
+              fileManager.fileExists(atPath: legacyURL.path),
+              !fileManager.fileExists(atPath: markerURL.path) else {
+            return
+        }
+
+        var source: OpaquePointer?
+        var destination: OpaquePointer?
+        defer {
+            if let destination { sqlite3_close(destination) }
+            if let source { sqlite3_close(source) }
+        }
+        do {
+            guard sqlite3_open_v2(
+                legacyURL.path,
+                &source,
+                SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+                nil
+            ) == SQLITE_OK else {
+                throw DatabaseError.openFailed("旧版本机数据库无法打开")
+            }
+            guard sqlite3_open(destinationURL.path, &destination) == SQLITE_OK else {
+                throw DatabaseError.openFailed("新版本机数据库无法创建")
+            }
+            guard let backup = sqlite3_backup_init(destination, "main", source, "main") else {
+                throw DatabaseError.statementFailed("无法迁移旧版本机数据库")
+            }
+            let result = sqlite3_backup_step(backup, -1)
+            let finishResult = sqlite3_backup_finish(backup)
+            guard result == SQLITE_DONE, finishResult == SQLITE_OK else {
+                throw DatabaseError.statementFailed("旧版本机数据库迁移未完成")
+            }
+            try Data(accountId.utf8).write(to: markerURL, options: .atomic)
+        } catch {
+            try? fileManager.removeItem(at: destinationURL)
+            throw error
+        }
+    }
+
+    static func deleteAccountDatabase(accountId: String) throws {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("WorkshopLedger", isDirectory: true)
+        let accountRoot = support
+            .appendingPathComponent("accounts", isDirectory: true)
+            .appendingPathComponent(safeAccountDirectoryName(accountId), isDirectory: true)
+        guard FileManager.default.fileExists(atPath: accountRoot.path) else { return }
+        try FileManager.default.removeItem(at: accountRoot)
+    }
     deinit {
         if let db {
             sqlite3_close(db)

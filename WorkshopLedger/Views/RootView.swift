@@ -17,41 +17,59 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            switch section {
-            case .bills:
-                HomeView(
-                    onNewEntry: openTodayEntry,
-                    onBackfill: openBackfillEntry,
-                    onOpenDate: openEntry,
-                    onOpenSettings: { section = .directory },
-                    onOpenReports: { section = .query }
-                )
-            case .entry:
-                EntryView(initialDate: entryDate, isBackfill: entryIsBackfill) {
-                    store.reloadAll()
-                    section = .bills
-                }
-                .id(entryReloadID)
-            case .directory:
-                DirectoryView { section = .bills }
-            case .query:
-                QueryView { section = .bills }
+            if !store.isCloudLoggedIn {
+                AccountLoginView()
+            } else if store.mustChangePassword {
+                RequiredPasswordChangeView()
+            } else {
+                authenticatedContent
             }
         }
         .task {
-            await store.applicationBecameActive()
+            if store.isReadyForApp {
+                await store.applicationBecameActive()
+            }
         }
         .onChange(of: scenePhase) { phase in
-            if phase == .active {
-                Task { await store.applicationBecameActive() }
-            }
+            guard phase == .active, store.isReadyForApp else { return }
+            Task { await store.applicationBecameActive() }
+        }
+        .onChange(of: store.cloudSession?.accountId) { _ in
+            section = .bills
+            entryDate = DateKey.startOfDay(Date())
+            entryIsBackfill = false
+            entryReloadID = UUID()
         }
         .alert(isPresented: errorBinding) {
             Alert(
-                title: Text("本机数据错误"),
+                title: Text("操作提示"),
                 message: Text(store.lastError ?? "未知错误"),
                 dismissButton: .default(Text("知道了")) { store.lastError = nil }
             )
+        }
+    }
+
+    @ViewBuilder
+    private var authenticatedContent: some View {
+        switch section {
+        case .bills:
+            HomeView(
+                onNewEntry: openTodayEntry,
+                onBackfill: openBackfillEntry,
+                onOpenDate: openEntry,
+                onOpenSettings: { section = .directory },
+                onOpenReports: { section = .query }
+            )
+        case .entry:
+            EntryView(initialDate: entryDate, isBackfill: entryIsBackfill) {
+                store.reloadAll()
+                section = .bills
+            }
+            .id(entryReloadID)
+        case .directory:
+            DirectoryView { section = .bills }
+        case .query:
+            QueryView { section = .bills }
         }
     }
 

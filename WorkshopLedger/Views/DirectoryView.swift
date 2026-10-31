@@ -26,7 +26,7 @@ struct DirectoryView: View {
             WorkshopShell {
                 WorkshopTopBar(
                     brandTitle: "设置管理",
-                    brandSubtitle: "Local Settings",
+                    brandSubtitle: "Account Settings",
                     brandIcon: "gearshape",
                     backAction: onClose
                 ) {
@@ -38,7 +38,7 @@ struct DirectoryView: View {
                         PageHeading(
                             eyebrow: "基础档案",
                             title: "设置管理",
-                            note: "客户与员工档案仅保存在当前设备，并作为录入页下拉选项使用。"
+                            note: "客户与员工档案保存在当前账号，并同步到该账号的云端备份；录入页会读取最新档案。"
                         ) {
                             PageScopeBadge(label: "本期仅配置", value: "客户 · 员工")
                         }
@@ -230,7 +230,7 @@ struct DirectoryView: View {
                 } label: {
                     HStack(spacing: 7) {
                         Image(systemName: "icloud.and.arrow.up")
-                        Text(store.isCloudLoggedIn ? "管理云端备份" : "登录并配置")
+                        Text("账号、设备与云端备份")
                     }
                 }
                 .buttonStyle(SecondaryButtonStyle())

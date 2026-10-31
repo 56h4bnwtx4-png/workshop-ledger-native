@@ -39,8 +39,8 @@ struct RemoteSnapshotRecord: Codable, Identifiable, Equatable {
     let sizeBytes: Int
     let sha256: String
     let revision: Int
+    let triggerType: String?
     let createdAt: String
-    let downloadUrl: String?
 
     var createdDate: Date? {
         CloudDate.parse(createdAt)
@@ -49,6 +49,37 @@ struct RemoteSnapshotRecord: Codable, Identifiable, Equatable {
     var formattedSize: String {
         ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)
     }
+}
+
+struct RemoteAccountRecord: Codable, Equatable {
+    let id: String
+    let loginName: String
+    let displayName: String
+    let status: String
+    let expiresAt: String?
+    let mustChangePassword: Bool
+    let createdAt: String?
+    let updatedAt: String?
+}
+
+struct RemoteDeviceRecord: Codable, Identifiable, Equatable {
+    let id: String
+    let slot: String
+    let platform: String
+    let displayName: String
+    let active: Bool
+    let leaseGeneration: Int
+    let boundAt: String
+    let lastSeenAt: String
+    let unboundAt: String?
+    let current: Bool?
+}
+
+struct RemoteAccessRecord: Codable, Equatable {
+    let effectiveStatus: String
+    let canRead: Bool
+    let canWrite: Bool
+    let graceUntil: String?
 }
 
 struct RemoteSessionInfo: Codable, Equatable {
@@ -62,7 +93,10 @@ struct RemoteWorkspaceResponse: Codable {
     let serverTime: String
     let latestSnapshot: RemoteSnapshotRecord?
     let data: RemoteWorkshopData
+    let account: RemoteAccountRecord?
+    let device: RemoteDeviceRecord?
     let session: RemoteSessionInfo?
+    let access: RemoteAccessRecord?
 }
 
 struct RemoteLoginResponse: Codable {
@@ -72,6 +106,10 @@ struct RemoteLoginResponse: Codable {
     let username: String
     let clientType: String
     let scope: String
+    let mustChangePassword: Bool
+    let account: RemoteAccountRecord
+    let device: RemoteDeviceRecord
+    let access: RemoteAccessRecord
 }
 
 struct RemoteSaveResponse: Codable {
@@ -87,16 +125,47 @@ struct RemoteSnapshotListResponse: Codable {
 
 struct RemoteSnapshotEnvelope: Codable {
     let schemaVersion: Int
+    let accountId: String?
     let generatedAt: String
     let localDate: String
     let revision: Int
     let data: RemoteWorkshopData
 }
 
+struct RemoteAccountResponse: Codable {
+    let account: RemoteAccountRecord
+    let device: RemoteDeviceRecord
+    let scope: String
+    let mustChangePassword: Bool
+    let access: RemoteAccessRecord
+}
+
+struct RemoteDeviceListResponse: Codable {
+    let devices: [RemoteDeviceRecord]
+}
+
+struct RemoteChangePasswordResponse: Codable {
+    let ok: Bool
+    let mustChangePassword: Bool
+    let account: RemoteAccountRecord
+    let access: RemoteAccessRecord
+}
+
 private struct RemoteLoginRequest: Encodable {
     let username: String
     let password: String
     let clientType: String
+    let deviceId: String
+    let deviceName: String
+}
+
+private struct RemoteChangePasswordRequest: Encodable {
+    let currentPassword: String
+    let newPassword: String
+}
+
+private struct RemoteUnbindDeviceRequest: Encodable {
+    let deviceId: String
 }
 
 private struct RemoteWorkshopUploadRequest: Encodable {
@@ -128,7 +197,13 @@ enum RemoteLedgerError: LocalizedError {
     case invalidURL
     case invalidResponse
     case unauthorized
-    case server(status: Int, message: String)
+    case transport(String)
+    case server(status: Int, message: String, code: String?)
+
+    var errorCode: String? {
+        if case .server(_, _, let code) = self { return code }
+        return nil
+    }
 
     var errorDescription: String? {
         switch self {
@@ -138,12 +213,13 @@ enum RemoteLedgerError: LocalizedError {
             return "服务器返回了无法识别的数据。"
         case .unauthorized:
             return "账号登录已失效，请重新登录。"
-        case .server(_, let message):
+        case .transport(let message):
+            return "网络连接失败：\(message)"
+        case .server(_, let message, _):
             return message
         }
     }
 }
-
 final class HTTPRemoteLedgerService {
     private let session: URLSession
     private let decoder = JSONDecoder()
@@ -161,9 +237,42 @@ final class HTTPRemoteLedgerService {
         }
     }
 
-    func login(baseURL: URL, username: String, password: String, clientType: String) async throws -> RemoteLoginResponse {
-        let body = try encoder.encode(RemoteLoginRequest(username: username, password: password, clientType: clientType))
-        return try await request(baseURL: baseURL, path: "/api/v1/auth/login", method: "POST", token: nil, body: body)
+    func login(
+        baseURL: URL,
+        username: String,
+        password: String,
+        clientType: String,
+        deviceId: String,
+        deviceName: String
+    ) async throws -> RemoteLoginResponse {
+        let body = try encoder.encode(RemoteLoginRequest(
+            username: username,
+            password: password,
+            clientType: clientType,
+            deviceId: deviceId,
+            deviceName: deviceName
+        ))
+        return try await request(
+            baseURL: baseURL,
+            path: "/api/v1/auth/login",
+            method: "POST",
+            token: nil,
+            body: body
+        )
+    }
+
+    func changePassword(baseURL: URL, token: String, currentPassword: String, newPassword: String) async throws -> RemoteChangePasswordResponse {
+        let body = try encoder.encode(RemoteChangePasswordRequest(
+            currentPassword: currentPassword,
+            newPassword: newPassword
+        ))
+        return try await request(
+            baseURL: baseURL,
+            path: "/api/v1/auth/change-password",
+            method: "POST",
+            token: token,
+            body: body
+        )
     }
 
     func logout(baseURL: URL, token: String) async {
@@ -172,6 +281,32 @@ final class HTTPRemoteLedgerService {
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         _ = try? await session.data(for: request)
+    }
+
+    func fetchAccount(baseURL: URL, token: String) async throws -> RemoteAccountResponse {
+        try await request(baseURL: baseURL, path: "/api/v1/account", method: "GET", token: token, body: nil)
+    }
+
+    func listDevices(baseURL: URL, token: String) async throws -> [RemoteDeviceRecord] {
+        let response: RemoteDeviceListResponse = try await request(
+            baseURL: baseURL,
+            path: "/api/v1/devices",
+            method: "GET",
+            token: token,
+            body: nil
+        )
+        return response.devices
+    }
+
+    func unbindDevice(baseURL: URL, token: String, deviceId: String) async throws {
+        let body = try encoder.encode(RemoteUnbindDeviceRequest(deviceId: deviceId))
+        let _: RemoteSimpleResponse = try await request(
+            baseURL: baseURL,
+            path: "/api/v1/devices/unbind",
+            method: "POST",
+            token: token,
+            body: body
+        )
     }
 
     func fetchWorkspace(baseURL: URL, token: String) async throws -> RemoteWorkspaceResponse {
@@ -225,7 +360,13 @@ final class HTTPRemoteLedgerService {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw RemoteLedgerError.transport(error.localizedDescription)
+        }
         guard let http = response as? HTTPURLResponse else {
             throw RemoteLedgerError.invalidResponse
         }
@@ -236,7 +377,8 @@ final class HTTPRemoteLedgerService {
             }
             throw RemoteLedgerError.server(
                 status: http.statusCode,
-                message: payload?.error ?? "服务器请求失败（HTTP \(http.statusCode)）"
+                message: payload?.error ?? "服务器请求失败（HTTP \(http.statusCode)）",
+                code: payload?.code
             )
         }
         do {
@@ -249,4 +391,5 @@ final class HTTPRemoteLedgerService {
 
 private struct ServerErrorResponse: Decodable {
     let error: String
+    let code: String?
 }
