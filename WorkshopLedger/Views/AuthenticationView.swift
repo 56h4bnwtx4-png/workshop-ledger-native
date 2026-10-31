@@ -101,7 +101,8 @@ struct AccountLoginView: View {
                         .foregroundColor(AppTheme.textFaint)
                 }
                 .padding(44)
-                .frame(width: 520, maxHeight: .infinity, alignment: .center)
+                .frame(width: 520)
+                .frame(maxHeight: .infinity, alignment: .center)
                 .background(Color.white)
             }
         }
