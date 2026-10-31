@@ -1,7 +1,7 @@
 import Foundation
 
 enum CloudDefaults {
-    static let baseURL = "https://ledger.893884474.xyz"
+    static let baseURL = "https://47-101-39-110.sslip.io"
     static let clientType = "ios"
 }
 

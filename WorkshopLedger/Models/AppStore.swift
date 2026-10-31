@@ -94,10 +94,6 @@ final class AppStore: ObservableObject {
         restoreStoredSession()
     }
 
-    var savedBaseURLString: String {
-        defaults.string(forKey: baseURLKey) ?? CloudDefaults.baseURL
-    }
-
     var savedUsername: String {
         defaults.string(forKey: usernameKey) ?? ""
     }
@@ -369,8 +365,8 @@ extension AppStore {
         let canWrite: Bool
     }
 
-    func login(baseURLString: String, username: String, password: String) async throws {
-        let normalizedURL = try normalizeBaseURL(baseURLString)
+    func login(username: String, password: String) async throws {
+        let normalizedURL = URL(string: CloudDefaults.baseURL)!
         let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedUsername.isEmpty else {
             throw RemoteLedgerError.server(status: 400, message: "请输入账号。", code: "username_required")
@@ -695,6 +691,10 @@ extension AppStore {
         guard let activeSession else {
             throw RemoteLedgerError.unauthorized
         }
+        if normalizedBaseURLString(activeSession.baseURL.absoluteString) != CloudDefaults.baseURL {
+            invalidateSession(reason: "服务器地址已更新，请重新登录。")
+            throw RemoteLedgerError.unauthorized
+        }
         if let expiresAt = activeSession.expiresAt, expiresAt <= Date() {
             invalidateSession(reason: "登录已过期，请重新输入账号密码。")
             throw RemoteLedgerError.unauthorized
@@ -752,7 +752,7 @@ extension AppStore {
             accountId: account.id,
             username: account.loginName,
             displayName: account.displayName,
-            baseURL: activeSession?.baseURL ?? URL(string: savedBaseURLString) ?? URL(string: CloudDefaults.baseURL)!,
+            baseURL: URL(string: CloudDefaults.baseURL)!,
             token: activeSession?.token ?? KeychainStore.get(tokenAccount) ?? "",
             expiresAt: currentTokenExpiry,
             scope: scope,
@@ -823,10 +823,21 @@ extension AppStore {
     }
 
     private func restoreStoredSession() {
-        guard let token = KeychainStore.get(tokenAccount), !token.isEmpty,
+        let fixedBaseURLString = CloudDefaults.baseURL
+        let storedToken = KeychainStore.get(tokenAccount)
+        let storedBaseURLString = defaults.string(forKey: baseURLKey)
+        if let storedToken, !storedToken.isEmpty,
+           normalizedBaseURLString(storedBaseURLString) != fixedBaseURLString {
+            KeychainStore.delete(tokenAccount)
+            clearSessionMetadata()
+            defaults.set(fixedBaseURLString, forKey: baseURLKey)
+            lastError = "服务器地址已更新，请重新登录。"
+            return
+        }
+        defaults.set(fixedBaseURLString, forKey: baseURLKey)
+
+        guard let token = storedToken, !token.isEmpty,
               let accountId = defaults.string(forKey: accountIdKey), !accountId.isEmpty,
-              let baseURLString = defaults.string(forKey: baseURLKey),
-              let baseURL = URL(string: baseURLString),
               let username = defaults.string(forKey: usernameKey), !username.isEmpty else {
             return
         }
@@ -843,7 +854,7 @@ extension AppStore {
                 accountId: accountId,
                 username: username,
                 displayName: defaults.string(forKey: displayNameKey) ?? username,
-                baseURL: baseURL,
+                baseURL: URL(string: fixedBaseURLString)!,
                 token: token,
                 expiresAt: expiresAt,
                 scope: canWrite ? "write" : "read",
@@ -877,7 +888,7 @@ extension AppStore {
 
     private func persistSessionMetadata() {
         guard let session = activeSession else { return }
-        defaults.set(session.baseURL.absoluteString, forKey: baseURLKey)
+        defaults.set(CloudDefaults.baseURL, forKey: baseURLKey)
         defaults.set(session.username, forKey: usernameKey)
         defaults.set(session.accountId, forKey: accountIdKey)
         defaults.set(session.displayName, forKey: displayNameKey)
@@ -961,17 +972,10 @@ extension AppStore {
         }
     }
 
-    private func normalizeBaseURL(_ value: String) throws -> URL {
-        var text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func normalizedBaseURLString(_ value: String?) -> String {
+        var text = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         while text.hasSuffix("/") { text.removeLast() }
-        guard let url = URL(string: text), let scheme = url.scheme?.lowercased(), let host = url.host else {
-            throw RemoteLedgerError.invalidURL
-        }
-        let isLocal = host == "localhost" || host == "127.0.0.1"
-        guard scheme == "https" || (scheme == "http" && isLocal) else {
-            throw RemoteLedgerError.server(status: 400, message: "公网服务器必须使用 HTTPS 地址。", code: "https_required")
-        }
-        return url
+        return text
     }
 
     private func stableDeviceId() -> String {

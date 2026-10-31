@@ -1,6 +1,12 @@
-# 车间计件 · iPadOS 原生版 v1.1.2
+# 车间计件 · iPadOS 原生版 v1.3.0
 
 纯 SwiftUI 原生应用，不使用 WebView。账本保存在应用沙盒内的 SQLite 数据库，正式账单会通过 HTTPS 自动备份到阿里云，草稿始终只留在本机。
+
+## v1.3.0 更新
+
+- 客户端内置固定服务器地址，登录页不再显示或允许修改服务器地址
+- 登录页只保留账号、密码输入框
+- 旧服务器地址保存的登录会话会主动失效，本地账目和已保存账号仍然保留，升级后只需重新输入密码登录一次
 
 ## v1.1.2 修复
 
@@ -43,7 +49,7 @@
 默认服务器：
 
 \`\`\`text
-https://ledger.893884474.xyz
+https://47-101-39-110.sslip.io
 \`\`\`
 
 客户端登录类型固定为 \`ios\`，服务端返回写权限。iPad 和 Windows 共用同一个客户端账号，但 Windows 端登录类型为 \`windows\`，只能读取。
@@ -74,9 +80,9 @@ tools/generate_icons.py          可选的图标重新生成脚本
 2. 将本目录全部文件上传到仓库，默认分支使用 \`main\`。
 3. 打开仓库的 **Actions** 页面，选择 **Build unsigned arm64 IPA**。
 4. 点击 **Run workflow**。
-5. 构建完成后，在该次运行底部下载 \`WorkshopLedger-v1.1.2-iOS-arm64-unsigned\` Artifact。
+5. 构建完成后，在该次运行底部下载 \`WorkshopLedger-v1.3.0-iOS-arm64-unsigned\` Artifact。
 6. 解压 Artifact，得到：
-   - \`WorkshopLedger-v1.1.2-iOS-arm64-unsigned.ipa\`
+   - \`WorkshopLedger-v1.3.0-iOS-arm64-unsigned.ipa\`
    - \`SHA256SUMS.txt\`
 7. 将 IPA 传到 iPad，使用 TrollStore 打开并安装。
 

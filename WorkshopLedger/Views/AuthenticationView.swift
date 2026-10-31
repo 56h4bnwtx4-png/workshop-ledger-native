@@ -2,7 +2,6 @@ import SwiftUI
 
 struct AccountLoginView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var serverURL = ""
     @State private var username = ""
     @State private var password = ""
     @State private var isWorking = false
@@ -57,12 +56,6 @@ struct AccountLoginView: View {
                     }
 
                     VStack(spacing: 16) {
-                        loginField(title: "服务器地址") {
-                            TextField("https://ledger.893884474.xyz", text: $serverURL)
-                                .keyboardType(.URL)
-                                .textInputAutocapitalization(.never)
-                                .disableAutocorrection(true)
-                        }
                         loginField(title: "登录账号") {
                             TextField("请输入账号", text: $username)
                                 .textInputAutocapitalization(.never)
@@ -107,7 +100,6 @@ struct AccountLoginView: View {
             }
         }
         .onAppear {
-            serverURL = store.savedBaseURLString
             username = store.savedUsername
         }
     }
@@ -136,7 +128,7 @@ struct AccountLoginView: View {
         errorMessage = ""
         defer { isWorking = false }
         do {
-            try await store.login(baseURLString: serverURL, username: username, password: password)
+            try await store.login(username: username, password: password)
         } catch {
             errorMessage = error.localizedDescription
         }
