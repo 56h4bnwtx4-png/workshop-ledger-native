@@ -134,6 +134,7 @@ final class Database {
             CREATE TABLE IF NOT EXISTS customers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                unit_price_cents INTEGER,
                 created_at REAL NOT NULL DEFAULT 0,
                 updated_at REAL NOT NULL DEFAULT 0
             );
@@ -148,6 +149,17 @@ final class Database {
                 bill_date TEXT NOT NULL UNIQUE,
                 submitted_at REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS settlement_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_no TEXT NOT NULL UNIQUE,
+                customer TEXT NOT NULL,
+                settlement_date TEXT NOT NULL,
+                receivable_cents INTEGER NOT NULL,
+                actual_amount_cents INTEGER NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                revoked_at REAL
+            );
             CREATE TABLE IF NOT EXISTS bill_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 bill_id INTEGER NOT NULL,
@@ -156,10 +168,14 @@ final class Database {
                 model TEXT NOT NULL,
                 quantity INTEGER NOT NULL,
                 color_count INTEGER NOT NULL,
-                FOREIGN KEY (bill_id) REFERENCES bills(id) ON DELETE CASCADE
+                unit_price_cents INTEGER,
+                settlement_batch_id INTEGER,
+                FOREIGN KEY (bill_id) REFERENCES bills(id) ON DELETE CASCADE,
+                FOREIGN KEY (settlement_batch_id) REFERENCES settlement_batches(id) ON DELETE SET NULL
             );
             CREATE INDEX IF NOT EXISTS idx_bill_items_bill_id ON bill_items(bill_id);
             CREATE INDEX IF NOT EXISTS idx_bills_date ON bills(bill_date DESC);
+            CREATE INDEX IF NOT EXISTS idx_settlement_batches_customer ON settlement_batches(customer, settlement_date DESC);
             CREATE TABLE IF NOT EXISTS drafts (
                 bill_date TEXT PRIMARY KEY,
                 payload TEXT NOT NULL,
@@ -167,11 +183,14 @@ final class Database {
             );
             """)
 
-        // Keeps databases created by earlier prototype builds compatible.
+        // Keeps databases created by earlier builds compatible without deleting any data.
         try? execute("ALTER TABLE customers ADD COLUMN created_at REAL NOT NULL DEFAULT 0;")
         try? execute("ALTER TABLE customers ADD COLUMN updated_at REAL NOT NULL DEFAULT 0;")
+        try? execute("ALTER TABLE customers ADD COLUMN unit_price_cents INTEGER;")
         try? execute("ALTER TABLE employees ADD COLUMN created_at REAL NOT NULL DEFAULT 0;")
         try? execute("ALTER TABLE employees ADD COLUMN updated_at REAL NOT NULL DEFAULT 0;")
+        try? execute("ALTER TABLE bill_items ADD COLUMN unit_price_cents INTEGER;")
+        try? execute("ALTER TABLE bill_items ADD COLUMN settlement_batch_id INTEGER;")
         try execute("""
             UPDATE customers
             SET created_at = CASE WHEN created_at = 0 THEN strftime('%s','now') ELSE created_at END,
@@ -179,6 +198,8 @@ final class Database {
             UPDATE employees
             SET created_at = CASE WHEN created_at = 0 THEN strftime('%s','now') ELSE created_at END,
                 updated_at = CASE WHEN updated_at = 0 THEN strftime('%s','now') ELSE updated_at END;
+            CREATE INDEX IF NOT EXISTS idx_settlement_batches_customer ON settlement_batches(customer, settlement_date DESC);
+            CREATE INDEX IF NOT EXISTS idx_bill_items_settlement_batch_id ON bill_items(settlement_batch_id);
             """)
     }
 
@@ -720,7 +741,7 @@ final class Database {
         }
     }
 
-    func loadSettlementBatches(includeRevoked: Bool = false) throws -> [SettlementBatch] {
+    func loadSettlementBatches(includeRevoked: Bool = true) throws -> [SettlementBatch] {
         let filter = includeRevoked ? "" : "WHERE revoked_at IS NULL"
         let statement = try prepare("""
             SELECT id, batch_no, customer, settlement_date, receivable_cents,
