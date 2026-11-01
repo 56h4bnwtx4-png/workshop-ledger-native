@@ -155,6 +155,7 @@ final class AppStore: ObservableObject {
             customers = try database.loadCustomers()
             employees = try database.loadEmployees()
             bills = try database.loadBills()
+            try removeDraftsMatchingBills(in: database)
             settlementBatches = try database.loadSettlementBatches()
             drafts = try database.loadDraftSummaries()
         } catch {
@@ -175,11 +176,9 @@ final class AppStore: ObservableObject {
     func loadRows(for date: Date) -> (rows: [EntryRow], source: EntrySource) {
         guard let database else { return ([EntryRow.empty()], .new) }
         do {
-            if let draftRows = try database.loadDraft(date: date), !draftRows.isEmpty {
-                return (draftRows, .draft)
-            }
+            let draftRows = try database.loadDraft(date: date)
             if let existing = bill(on: date), !existing.items.isEmpty {
-                let rows = existing.items.map {
+                let billRows = existing.items.map {
                     EntryRow(
                         id: UUID(),
                         customer: $0.customer,
@@ -192,12 +191,38 @@ final class AppStore: ObservableObject {
                         settlementBatchID: $0.settlementBatchID
                     )
                 }
-                return (rows, .bill)
+                if let draftRows = draftRows, !draftRows.isEmpty {
+                    if draftRows.matchesBillItems(existing.items) {
+                        try database.deleteDraft(date: date)
+                        drafts = try database.loadDraftSummaries()
+                    } else {
+                        return (draftRows, .draft)
+                    }
+                }
+                return (billRows, .bill)
+            }
+            if let draftRows = draftRows, !draftRows.isEmpty {
+                return (draftRows, .draft)
             }
         } catch {
             lastError = error.localizedDescription
         }
         return ([EntryRow.empty(customer: customers.first?.name ?? "", employee: employees.first?.name ?? "")], .new)
+    }
+
+    private func removeDraftsMatchingBills(in database: Database) throws {
+        let billsByDate = Dictionary(uniqueKeysWithValues: bills.map {
+            (DateKey.string(from: $0.date), $0)
+        })
+        for summary in try database.loadDraftSummaries() {
+            let key = DateKey.string(from: summary.date)
+            guard let bill = billsByDate[key],
+                  let rows = try database.loadDraft(date: summary.date),
+                  rows.matchesBillItems(bill.items) else {
+                continue
+            }
+            try database.deleteDraft(date: summary.date)
+        }
     }
 
     func saveDraft(date: Date, rows: [EntryRow]) {

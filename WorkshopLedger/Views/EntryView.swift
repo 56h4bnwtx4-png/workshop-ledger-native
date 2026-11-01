@@ -482,7 +482,7 @@ struct EntryView: View {
             copy.colorCount = Swift.min(5, Swift.max(1, copy.colorCount))
             return copy
         }
-        .filter { !$0.isCompletelyEmpty }
+        .filter(\.hasEntryData)
     }
 
     private var currentSignature: EntrySignature {
@@ -603,8 +603,12 @@ struct EntryView: View {
     private func saveDraftIfNeeded() {
         guard didLoad, !didFinish, hasSelectedDate else { return }
         let signature = currentSignature
-        guard signature != baselineSignature else { return }
-        autoSaveWorkItem?.cancel()
+        let rowsToSave = currentRowsForDraft
+        let existingBill = store.bill(on: billDate)
+        let matchesExistingBill = existingBill.map {
+            rowsToSave.matchesBillItems($0.items)
+        } ?? false
+        let shouldClearDraft = rowsToSave.isEmpty || matchesExistingBill
 
         if source == .draft,
            let previousDate = originalDraftDate,
@@ -612,15 +616,20 @@ struct EntryView: View {
             store.deleteDraft(date: previousDate)
         }
 
-        let rowsToSave = currentRowsForDraft
-        if rowsToSave.isEmpty {
+        if shouldClearDraft {
+            autoSaveWorkItem?.cancel()
             store.deleteDraft(date: billDate)
             originalDraftDate = nil
-        } else {
-            store.saveDraft(date: billDate, rows: rowsToSave)
-            source = .draft
-            originalDraftDate = billDate
+            source = existingBill == nil ? .new : .bill
+            baselineSignature = signature
+            return
         }
+
+        guard signature != baselineSignature else { return }
+        autoSaveWorkItem?.cancel()
+        store.saveDraft(date: billDate, rows: rowsToSave)
+        source = .draft
+        originalDraftDate = billDate
         baselineSignature = signature
     }
 
@@ -733,6 +742,16 @@ struct EntryView: View {
             activeAlert = .error("请至少填写一条计件记录。")
             return
         }
+        if let existingBill = store.bill(on: billDate),
+           candidate.matchesBillItems(existingBill.items) {
+            store.deleteDraft(date: billDate)
+            guard store.draft(on: billDate) == nil else {
+                store.lastError = store.lastError ?? "无法清理重复草稿，请重试。"
+                return
+            }
+            finishAndClose()
+            return
+        }
         if let missing = candidate.first(where: { $0.customer.isEmpty }) {
             activeAlert = .error("第 \(candidate.firstIndex(of: missing).map { $0 + 1 } ?? 1) 条记录尚未选择客户。")
             return
@@ -774,7 +793,7 @@ struct EntryView: View {
             didFinish = true
             onClose()
         } catch {
-            activeAlert = .error(error.localizedDescription)
+            store.lastError = error.localizedDescription
         }
     }
 

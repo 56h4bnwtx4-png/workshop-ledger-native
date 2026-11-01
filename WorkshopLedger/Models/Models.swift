@@ -118,6 +118,11 @@ struct EntryRow: Identifiable, Codable, Hashable {
 
     var isLocked: Bool { settlementBatchID != nil }
 
+    var hasEntryData: Bool {
+        !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !quantity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var isCompletelyEmpty: Bool {
         customer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && employee.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -229,6 +234,18 @@ enum MoneyText {
 }
 
 extension Array where Element == EntryRow {
+    func matchesBillItems(_ items: [BillItem]) -> Bool {
+        let rows = normalizedForSubmission().filter(\.hasEntryData)
+        guard rows.count == items.count else { return false }
+        return zip(rows, items).allSatisfy { row, item in
+            row.customer == item.customer
+                && row.employee == item.employee
+                && row.model == item.model
+                && row.quantityValue == item.quantity
+                && row.colorCount == item.colorCount
+        }
+    }
+
     func normalizedForSubmission() -> [EntryRow] {
         map { row in
             var copy = row
