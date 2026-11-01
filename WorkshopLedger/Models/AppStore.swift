@@ -39,6 +39,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var customers: [Customer] = []
     @Published private(set) var employees: [Employee] = []
     @Published private(set) var bills: [Bill] = []
+    @Published private(set) var settlementBatches: [SettlementBatch] = []
     @Published private(set) var drafts: [DraftSummary] = []
     @Published var lastError: String?
 
@@ -154,6 +155,7 @@ final class AppStore: ObservableObject {
             customers = try database.loadCustomers()
             employees = try database.loadEmployees()
             bills = try database.loadBills()
+            settlementBatches = try database.loadSettlementBatches()
             drafts = try database.loadDraftSummaries()
         } catch {
             lastError = error.localizedDescription
@@ -184,7 +186,10 @@ final class AppStore: ObservableObject {
                         employee: $0.employee,
                         model: $0.model,
                         quantity: String($0.quantity),
-                        colorCount: $0.colorCount
+                        colorCount: $0.colorCount,
+                        existingItemID: $0.id,
+                        storedUnitPriceCents: $0.unitPriceCents,
+                        settlementBatchID: $0.settlementBatchID
                     )
                 }
                 return (rows, .bill)
@@ -227,24 +232,72 @@ final class AppStore: ObservableObject {
         customers = try database.loadCustomers()
         employees = try database.loadEmployees()
         bills = try database.loadBills()
+        settlementBatches = try database.loadSettlementBatches()
         drafts = try database.loadDraftSummaries()
         markCloudDirty(billDate: date)
         return bill
     }
 
-    func addCustomer(name: String) throws {
+    func addCustomer(name: String, unitPriceCents: Int64? = nil) throws {
         try ensureWritable()
         guard let database else { throw DatabaseError.openFailed("数据库未打开") }
-        _ = try database.addCustomer(name: name)
+        _ = try database.addCustomer(name: name, unitPriceCents: unitPriceCents)
         customers = try database.loadCustomers()
         markCloudDirty()
     }
 
-    func updateCustomer(_ customer: Customer, name: String) throws {
+    func updateCustomer(_ customer: Customer, name: String, unitPriceCents: Int64?) throws {
         try ensureWritable()
         guard let database else { throw DatabaseError.openFailed("数据库未打开") }
-        try database.updateCustomer(id: customer.id, name: name)
+        let shouldBackfill = customer.unitPriceCents == nil && unitPriceCents != nil
+        try database.updateCustomer(
+            id: customer.id,
+            name: name,
+            unitPriceCents: unitPriceCents,
+            backfillHistoricalPrices: shouldBackfill
+        )
         customers = try database.loadCustomers()
+        bills = try database.loadBills()
+        settlementBatches = try database.loadSettlementBatches()
+        markCloudDirty()
+    }
+
+    func unitPriceCents(forCustomer name: String) -> Int64? {
+        customers.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame })?.unitPriceCents
+    }
+
+    func settlementBatch(id: Int64?) -> SettlementBatch? {
+        guard let id else { return nil }
+        return settlementBatches.first { $0.id == id }
+    }
+
+    @discardableResult
+    func createSettlementBatch(
+        itemIDs: [Int64],
+        settlementDate: Date,
+        actualAmountCents: Int64,
+        note: String
+    ) throws -> SettlementBatch {
+        try ensureWritable()
+        guard let database else { throw DatabaseError.openFailed("数据库未打开") }
+        let batch = try database.createSettlementBatch(
+            itemIDs: itemIDs,
+            settlementDate: settlementDate,
+            actualAmountCents: actualAmountCents,
+            note: note
+        )
+        bills = try database.loadBills()
+        settlementBatches = try database.loadSettlementBatches()
+        markCloudDirty()
+        return batch
+    }
+
+    func revokeSettlementBatch(_ batch: SettlementBatch) throws {
+        try ensureWritable()
+        guard let database else { throw DatabaseError.openFailed("数据库未打开") }
+        try database.revokeSettlementBatch(id: batch.id)
+        bills = try database.loadBills()
+        settlementBatches = try database.loadSettlementBatches()
         markCloudDirty()
     }
 
@@ -997,6 +1050,7 @@ extension AppStore {
         let remoteCustomers = customers.map {
             RemoteDirectoryRecord(
                 name: $0.name,
+                unitPriceCents: $0.unitPriceCents,
                 createdAt: CloudDate.isoString($0.createdAt),
                 updatedAt: CloudDate.isoString($0.updatedAt)
             )
@@ -1004,10 +1058,12 @@ extension AppStore {
         let remoteEmployees = employees.map {
             RemoteDirectoryRecord(
                 name: $0.name,
+                unitPriceCents: nil,
                 createdAt: CloudDate.isoString($0.createdAt),
                 updatedAt: CloudDate.isoString($0.updatedAt)
             )
         }
+        let batchNumbers = Dictionary(uniqueKeysWithValues: settlementBatches.map { ($0.id, $0.batchNo) })
         let remoteBills = bills.map { bill in
             RemoteBillRecord(
                 date: DateKey.string(from: bill.date),
@@ -1018,16 +1074,31 @@ extension AppStore {
                         employee: $0.employee,
                         model: $0.model,
                         quantity: $0.quantity,
-                        colorCount: $0.colorCount
+                        colorCount: $0.colorCount,
+                        unitPriceCents: $0.unitPriceCents,
+                        settlementBatchNo: $0.settlementBatchID.flatMap { batchNumbers[$0] }
                     )
                 }
             )
         }
+        let remoteBatches = settlementBatches.map {
+            RemoteSettlementBatchRecord(
+                batchNo: $0.batchNo,
+                customer: $0.customer,
+                settlementDate: DateKey.string(from: $0.settlementDate),
+                receivableCents: $0.receivableCents,
+                actualAmountCents: $0.actualAmountCents,
+                note: $0.note,
+                createdAt: CloudDate.isoString($0.createdAt),
+                revokedAt: $0.revokedAt.map(CloudDate.isoString)
+            )
+        }
         return RemoteWorkshopData(
-            schemaVersion: 1,
+            schemaVersion: 2,
             customers: remoteCustomers,
             employees: remoteEmployees,
-            bills: remoteBills
+            bills: remoteBills,
+            settlementBatches: remoteBatches
         )
     }
 
@@ -1037,6 +1108,7 @@ extension AppStore {
         customers = try database.loadCustomers()
         employees = try database.loadEmployees()
         bills = try database.loadBills()
+        settlementBatches = try database.loadSettlementBatches()
         drafts = try database.loadDraftSummaries()
         return count
     }

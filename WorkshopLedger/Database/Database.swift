@@ -241,10 +241,18 @@ final class Database {
         return sqlite3_last_insert_rowid(db)
     }
 
+    private func bindOptionalInt64(_ value: Int64?, at index: Int32, in statement: OpaquePointer) {
+        if let value {
+            sqlite3_bind_int64(statement, index, value)
+        } else {
+            sqlite3_bind_null(statement, index)
+        }
+    }
+
     // MARK: - Directory
 
     func loadCustomers() throws -> [Customer] {
-        let statement = try prepare("SELECT id, name, created_at, updated_at FROM customers ORDER BY name COLLATE NOCASE;")
+        let statement = try prepare("SELECT id, name, unit_price_cents, created_at, updated_at FROM customers ORDER BY name COLLATE NOCASE;")
         defer { sqlite3_finalize(statement) }
         var result: [Customer] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -252,32 +260,80 @@ final class Database {
                 Customer(
                     id: sqlite3_column_int64(statement, 0),
                     name: text(column: 1, statement: statement),
-                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 2)),
-                    updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
+                    unitPriceCents: optionalInt64(column: 2, statement: statement),
+                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 3)),
+                    updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))
                 )
             )
         }
         return result
     }
 
-    func addCustomer(name: String) throws -> Customer {
-        let statement = try prepare("INSERT INTO customers(name, created_at, updated_at) VALUES (?, ?, ?);")
+    func addCustomer(name: String, unitPriceCents: Int64? = nil) throws -> Customer {
+        let statement = try prepare("INSERT INTO customers(name, unit_price_cents, created_at, updated_at) VALUES (?, ?, ?, ?);")
         defer { sqlite3_finalize(statement) }
         let now = Date().timeIntervalSince1970
         try bindText(name, at: 1, in: statement)
-        sqlite3_bind_double(statement, 2, now)
+        bindOptionalInt64(unitPriceCents, at: 2, in: statement)
         sqlite3_bind_double(statement, 3, now)
+        sqlite3_bind_double(statement, 4, now)
         try stepDone(statement)
-        return Customer(id: lastInsertID, name: name, createdAt: Date(timeIntervalSince1970: now), updatedAt: Date(timeIntervalSince1970: now))
+        return Customer(
+            id: lastInsertID,
+            name: name,
+            unitPriceCents: unitPriceCents,
+            createdAt: Date(timeIntervalSince1970: now),
+            updatedAt: Date(timeIntervalSince1970: now)
+        )
     }
 
-    func updateCustomer(id: Int64, name: String) throws {
-        let statement = try prepare("UPDATE customers SET name = ?, updated_at = ? WHERE id = ?;")
-        defer { sqlite3_finalize(statement) }
-        try bindText(name, at: 1, in: statement)
-        sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
-        sqlite3_bind_int64(statement, 3, id)
-        try stepDone(statement)
+    func updateCustomer(
+        id: Int64,
+        name: String,
+        unitPriceCents: Int64?,
+        backfillHistoricalPrices: Bool
+    ) throws {
+        try execute("BEGIN IMMEDIATE TRANSACTION;")
+        do {
+            var previousName = name
+            try withStatement("SELECT name FROM customers WHERE id = ?;") { statement in
+                sqlite3_bind_int64(statement, 1, id)
+                if sqlite3_step(statement) == SQLITE_ROW {
+                    previousName = text(column: 0, statement: statement)
+                } else {
+                    throw DatabaseError.stepFailed("客户档案不存在")
+                }
+            }
+            let now = Date().timeIntervalSince1970
+            try withStatement("""
+                UPDATE customers
+                SET name = ?, unit_price_cents = ?, updated_at = ?
+                WHERE id = ?;
+                """) { statement in
+                try bindText(name, at: 1, in: statement)
+                bindOptionalInt64(unitPriceCents, at: 2, in: statement)
+                sqlite3_bind_double(statement, 3, now)
+                sqlite3_bind_int64(statement, 4, id)
+                try stepDone(statement)
+            }
+            if backfillHistoricalPrices, let unitPriceCents {
+                try withStatement("""
+                    UPDATE bill_items
+                    SET unit_price_cents = ?
+                    WHERE (customer = ? OR customer = ?)
+                      AND unit_price_cents IS NULL;
+                    """) { statement in
+                    sqlite3_bind_int64(statement, 1, unitPriceCents)
+                    try bindText(previousName, at: 2, in: statement)
+                    try bindText(name, at: 3, in: statement)
+                    try stepDone(statement)
+                }
+            }
+            try execute("COMMIT;")
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
+        }
     }
 
     func deleteCustomer(id: Int64) throws {
@@ -350,7 +406,8 @@ final class Database {
 
     private func loadBillItems(billID: Int64) throws -> [BillItem] {
         let statement = try prepare("""
-            SELECT id, bill_id, customer, employee, model, quantity, color_count
+            SELECT id, bill_id, customer, employee, model, quantity, color_count,
+                   unit_price_cents, settlement_batch_id
             FROM bill_items WHERE bill_id = ? ORDER BY id ASC;
             """)
         defer { sqlite3_finalize(statement) }
@@ -365,7 +422,9 @@ final class Database {
                     employee: text(column: 3, statement: statement),
                     model: text(column: 4, statement: statement),
                     quantity: Int(sqlite3_column_int64(statement, 5)),
-                    colorCount: Int(sqlite3_column_int64(statement, 6))
+                    colorCount: Int(sqlite3_column_int64(statement, 6)),
+                    unitPriceCents: optionalInt64(column: 7, statement: statement),
+                    settlementBatchID: optionalInt64(column: 8, statement: statement)
                 )
             )
         }
@@ -380,58 +439,120 @@ final class Database {
 
         try execute("BEGIN IMMEDIATE TRANSACTION;")
         do {
-            let lookup = try prepare("SELECT id FROM bills WHERE bill_date = ?;")
-            var existingID: Int64?
-            try bindText(billDate, at: 1, in: lookup)
-            if sqlite3_step(lookup) == SQLITE_ROW {
-                existingID = sqlite3_column_int64(lookup, 0)
+            var existingBillID: Int64?
+            try withStatement("SELECT id FROM bills WHERE bill_date = ?;") { statement in
+                try bindText(billDate, at: 1, in: statement)
+                if sqlite3_step(statement) == SQLITE_ROW {
+                    existingBillID = sqlite3_column_int64(statement, 0)
+                }
             }
-            sqlite3_finalize(lookup)
 
             let submittedAt = Date().timeIntervalSince1970
             let billID: Int64
-            if let existingID {
-                billID = existingID
-                let update = try prepare("UPDATE bills SET submitted_at = ? WHERE id = ?;")
-                defer { sqlite3_finalize(update) }
-                sqlite3_bind_double(update, 1, submittedAt)
-                sqlite3_bind_int64(update, 2, billID)
-                try stepDone(update)
-
-                let deleteItems = try prepare("DELETE FROM bill_items WHERE bill_id = ?;")
-                defer { sqlite3_finalize(deleteItems) }
-                sqlite3_bind_int64(deleteItems, 1, billID)
-                try stepDone(deleteItems)
+            if let existingBillID {
+                billID = existingBillID
+                try withStatement("UPDATE bills SET submitted_at = ? WHERE id = ?;") { statement in
+                    sqlite3_bind_double(statement, 1, submittedAt)
+                    sqlite3_bind_int64(statement, 2, billID)
+                    try stepDone(statement)
+                }
             } else {
-                let insertBill = try prepare("INSERT INTO bills(bill_date, submitted_at) VALUES (?, ?);")
-                defer { sqlite3_finalize(insertBill) }
-                try bindText(billDate, at: 1, in: insertBill)
-                sqlite3_bind_double(insertBill, 2, submittedAt)
-                try stepDone(insertBill)
+                try withStatement("INSERT INTO bills(bill_date, submitted_at) VALUES (?, ?);") { statement in
+                    try bindText(billDate, at: 1, in: statement)
+                    sqlite3_bind_double(statement, 2, submittedAt)
+                    try stepDone(statement)
+                }
                 billID = lastInsertID
             }
 
-            let insertItem = try prepare("""
-                INSERT INTO bill_items(bill_id, customer, employee, model, quantity, color_count)
-                VALUES (?, ?, ?, ?, ?, ?);
-                """)
-            defer { sqlite3_finalize(insertItem) }
-            for row in normalizedRows {
-                sqlite3_reset(insertItem)
-                sqlite3_clear_bindings(insertItem)
-                sqlite3_bind_int64(insertItem, 1, billID)
-                try bindText(row.customer, at: 2, in: insertItem)
-                try bindText(row.employee, at: 3, in: insertItem)
-                try bindText(row.model, at: 4, in: insertItem)
-                sqlite3_bind_int64(insertItem, 5, Int64(row.quantityValue ?? 0))
-                sqlite3_bind_int64(insertItem, 6, Int64(row.colorCount))
-                try stepDone(insertItem)
+            let existingItems = try loadBillItems(billID: billID)
+            let existingByID = Dictionary(uniqueKeysWithValues: existingItems.map { ($0.id, $0) })
+            let incomingExistingIDs = Set(normalizedRows.compactMap(\.existingItemID))
+            if existingItems.contains(where: { $0.settlementBatchID != nil && !incomingExistingIDs.contains($0.id) }) {
+                throw DatabaseError.stepFailed("已结清流水已锁定，不能删除。请先撤销对应结清批次。")
             }
 
-            let deleteDraft = try prepare("DELETE FROM drafts WHERE bill_date = ?;")
-            defer { sqlite3_finalize(deleteDraft) }
-            try bindText(billDate, at: 1, in: deleteDraft)
-            try stepDone(deleteDraft)
+            var prices: [String: Int64] = [:]
+            try withStatement("SELECT name, unit_price_cents FROM customers WHERE unit_price_cents IS NOT NULL;") { statement in
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    prices[text(column: 0, statement: statement).lowercased()] = sqlite3_column_int64(statement, 1)
+                }
+            }
+
+            let updateItem = try prepare("""
+                UPDATE bill_items
+                SET customer = ?, employee = ?, model = ?, quantity = ?, color_count = ?, unit_price_cents = ?
+                WHERE id = ? AND bill_id = ? AND settlement_batch_id IS NULL;
+                """)
+            defer { sqlite3_finalize(updateItem) }
+            let insertItem = try prepare("""
+                INSERT INTO bill_items(bill_id, customer, employee, model, quantity, color_count, unit_price_cents)
+                VALUES (?, ?, ?, ?, ?, ?, ?);
+                """)
+            defer { sqlite3_finalize(insertItem) }
+
+            for row in normalizedRows {
+                let existing = row.existingItemID.flatMap { existingByID[$0] }
+                if let existing, existing.settlementBatchID != nil {
+                    let unchanged = existing.customer == row.customer
+                        && existing.employee == row.employee
+                        && existing.model == row.model
+                        && existing.quantity == (row.quantityValue ?? 0)
+                        && existing.colorCount == row.colorCount
+                    guard unchanged else {
+                        throw DatabaseError.stepFailed("已结清流水已锁定，不能修改。请先撤销对应结清批次。")
+                    }
+                    continue
+                }
+
+                let unitPrice: Int64
+                if let existing,
+                   existing.customer == row.customer,
+                   let historicalPrice = existing.unitPriceCents {
+                    unitPrice = historicalPrice
+                } else if let currentPrice = prices[row.customer.lowercased()] {
+                    unitPrice = currentPrice
+                } else {
+                    throw DatabaseError.stepFailed("客户“\(row.customer)”尚未设置加工单价，请先到客户管理页设置。")
+                }
+
+                if let existing {
+                    sqlite3_reset(updateItem)
+                    sqlite3_clear_bindings(updateItem)
+                    try bindText(row.customer, at: 1, in: updateItem)
+                    try bindText(row.employee, at: 2, in: updateItem)
+                    try bindText(row.model, at: 3, in: updateItem)
+                    sqlite3_bind_int64(updateItem, 4, Int64(row.quantityValue ?? 0))
+                    sqlite3_bind_int64(updateItem, 5, Int64(row.colorCount))
+                    sqlite3_bind_int64(updateItem, 6, unitPrice)
+                    sqlite3_bind_int64(updateItem, 7, existing.id)
+                    sqlite3_bind_int64(updateItem, 8, billID)
+                    try stepDone(updateItem)
+                } else {
+                    sqlite3_reset(insertItem)
+                    sqlite3_clear_bindings(insertItem)
+                    sqlite3_bind_int64(insertItem, 1, billID)
+                    try bindText(row.customer, at: 2, in: insertItem)
+                    try bindText(row.employee, at: 3, in: insertItem)
+                    try bindText(row.model, at: 4, in: insertItem)
+                    sqlite3_bind_int64(insertItem, 5, Int64(row.quantityValue ?? 0))
+                    sqlite3_bind_int64(insertItem, 6, Int64(row.colorCount))
+                    sqlite3_bind_int64(insertItem, 7, unitPrice)
+                    try stepDone(insertItem)
+                }
+            }
+
+            for item in existingItems where item.settlementBatchID == nil && !incomingExistingIDs.contains(item.id) {
+                try withStatement("DELETE FROM bill_items WHERE id = ?;") { statement in
+                    sqlite3_bind_int64(statement, 1, item.id)
+                    try stepDone(statement)
+                }
+            }
+
+            try withStatement("DELETE FROM drafts WHERE bill_date = ?;") { statement in
+                try bindText(billDate, at: 1, in: statement)
+                try stepDone(statement)
+            }
 
             try execute("COMMIT;")
             return Bill(
@@ -446,26 +567,209 @@ final class Database {
         }
     }
 
+    // MARK: - Settlement
+
+    func createSettlementBatch(
+        itemIDs: [Int64],
+        settlementDate: Date,
+        actualAmountCents: Int64,
+        note: String
+    ) throws -> SettlementBatch {
+        guard let db else { throw DatabaseError.openFailed("数据库未打开") }
+        let uniqueIDs = Array(Set(itemIDs)).sorted()
+        guard !uniqueIDs.isEmpty else { throw DatabaseError.stepFailed("请选择要结清的流水。") }
+        guard actualAmountCents >= 0 else { throw DatabaseError.stepFailed("实际结款金额不能为负数。") }
+
+        try execute("BEGIN IMMEDIATE TRANSACTION;")
+        do {
+            let placeholders = Array(repeating: "?", count: uniqueIDs.count).joined(separator: ",")
+            var selected: [(id: Int64, customer: String, price: Int64, quantity: Int64, color: Int64, batch: Int64?)] = []
+            try withStatement("""
+                SELECT id, customer, unit_price_cents, quantity, color_count, settlement_batch_id
+                FROM bill_items WHERE id IN (\(placeholders)) ORDER BY id;
+                """) { statement in
+                for (offset, id) in uniqueIDs.enumerated() {
+                    sqlite3_bind_int64(statement, Int32(offset + 1), id)
+                }
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    selected.append((
+                        sqlite3_column_int64(statement, 0),
+                        text(column: 1, statement: statement),
+                        optionalInt64(column: 2, statement: statement) ?? 0,
+                        sqlite3_column_int64(statement, 3),
+                        sqlite3_column_int64(statement, 4),
+                        optionalInt64(column: 5, statement: statement)
+                    ))
+                }
+            }
+            guard selected.count == uniqueIDs.count else {
+                throw DatabaseError.stepFailed("部分流水已不存在，请刷新后重试。")
+            }
+            guard !selected.contains(where: { $0.batch != nil }) else {
+                throw DatabaseError.stepFailed("所选流水中含有已结清记录，请刷新后重试。")
+            }
+            guard let customer = selected.first?.customer,
+                  selected.allSatisfy({ $0.customer == customer }) else {
+                throw DatabaseError.stepFailed("同一结清批次只能选择同一客户的流水。")
+            }
+            guard !selected.contains(where: { $0.price <= 0 }) else {
+                throw DatabaseError.stepFailed("部分流水尚未设置加工单价，不能结清。")
+            }
+
+            let receivable = selected.reduce(Int64(0)) { $0 + $1.price * $1.quantity * $1.color }
+            let day = DateKey.string(from: settlementDate)
+            let prefix = "QZ-\(day.replacingOccurrences(of: "-", with: ""))-"
+            var sequence = 1
+            try withStatement("SELECT COUNT(*) FROM settlement_batches WHERE batch_no LIKE ?;") { statement in
+                try bindText(prefix + "%", at: 1, in: statement)
+                if sqlite3_step(statement) == SQLITE_ROW {
+                    sequence = Int(sqlite3_column_int64(statement, 0)) + 1
+                }
+            }
+            var batchNo = "\(prefix)\(String(format: "%03d", sequence))"
+            while try settlementBatchExists(batchNo) {
+                sequence += 1
+                batchNo = "\(prefix)\(String(format: "%03d", sequence))"
+            }
+
+            let createdAt = Date().timeIntervalSince1970
+            try withStatement("""
+                INSERT INTO settlement_batches(
+                    batch_no, customer, settlement_date, receivable_cents,
+                    actual_amount_cents, note, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?);
+                """) { statement in
+                try bindText(batchNo, at: 1, in: statement)
+                try bindText(customer, at: 2, in: statement)
+                try bindText(day, at: 3, in: statement)
+                sqlite3_bind_int64(statement, 4, receivable)
+                sqlite3_bind_int64(statement, 5, actualAmountCents)
+                try bindText(String(note.prefix(200)), at: 6, in: statement)
+                sqlite3_bind_double(statement, 7, createdAt)
+                try stepDone(statement)
+            }
+            let batchID = lastInsertID
+            try withStatement("""
+                UPDATE bill_items SET settlement_batch_id = ?
+                WHERE id IN (\(placeholders)) AND settlement_batch_id IS NULL;
+                """) { statement in
+                sqlite3_bind_int64(statement, 1, batchID)
+                for (offset, id) in uniqueIDs.enumerated() {
+                    sqlite3_bind_int64(statement, Int32(offset + 2), id)
+                }
+                try stepDone(statement)
+            }
+            guard sqlite3_changes(db) == Int32(uniqueIDs.count) else {
+                throw DatabaseError.stepFailed("结清状态更新失败，请刷新后重试。")
+            }
+
+            try execute("COMMIT;")
+            return SettlementBatch(
+                id: batchID,
+                batchNo: batchNo,
+                customer: customer,
+                settlementDate: settlementDate,
+                receivableCents: receivable,
+                actualAmountCents: actualAmountCents,
+                note: String(note.prefix(200)),
+                createdAt: Date(timeIntervalSince1970: createdAt),
+                revokedAt: nil
+            )
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
+        }
+    }
+
+    private func settlementBatchExists(_ batchNo: String) throws -> Bool {
+        try withStatement("SELECT 1 FROM settlement_batches WHERE batch_no = ? LIMIT 1;") { statement in
+            try bindText(batchNo, at: 1, in: statement)
+            return sqlite3_step(statement) == SQLITE_ROW
+        }
+    }
+
+    func revokeSettlementBatch(id: Int64) throws {
+        try execute("BEGIN IMMEDIATE TRANSACTION;")
+        do {
+            var exists = false
+            try withStatement("SELECT revoked_at FROM settlement_batches WHERE id = ?;") { statement in
+                sqlite3_bind_int64(statement, 1, id)
+                if sqlite3_step(statement) == SQLITE_ROW {
+                    exists = sqlite3_column_type(statement, 0) == SQLITE_NULL
+                }
+            }
+            guard exists else { throw DatabaseError.stepFailed("该结清批次不存在或已撤销。") }
+            try withStatement("UPDATE bill_items SET settlement_batch_id = NULL WHERE settlement_batch_id = ?;") { statement in
+                sqlite3_bind_int64(statement, 1, id)
+                try stepDone(statement)
+            }
+            try withStatement("UPDATE settlement_batches SET revoked_at = ? WHERE id = ?;") { statement in
+                sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
+                sqlite3_bind_int64(statement, 2, id)
+                try stepDone(statement)
+            }
+            try execute("COMMIT;")
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
+        }
+    }
+
+    func loadSettlementBatches(includeRevoked: Bool = false) throws -> [SettlementBatch] {
+        let filter = includeRevoked ? "" : "WHERE revoked_at IS NULL"
+        let statement = try prepare("""
+            SELECT id, batch_no, customer, settlement_date, receivable_cents,
+                   actual_amount_cents, note, created_at, revoked_at
+            FROM settlement_batches
+            \(filter)
+            ORDER BY settlement_date DESC, id DESC;
+            """)
+        defer { sqlite3_finalize(statement) }
+        var result: [SettlementBatch] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let day = text(column: 3, statement: statement)
+            guard let settlementDate = DateKey.date(from: day) else { continue }
+            let revokedAt = sqlite3_column_type(statement, 8) == SQLITE_NULL
+                ? nil
+                : Date(timeIntervalSince1970: sqlite3_column_double(statement, 8))
+            result.append(
+                SettlementBatch(
+                    id: sqlite3_column_int64(statement, 0),
+                    batchNo: text(column: 1, statement: statement),
+                    customer: text(column: 2, statement: statement),
+                    settlementDate: settlementDate,
+                    receivableCents: sqlite3_column_int64(statement, 4),
+                    actualAmountCents: sqlite3_column_int64(statement, 5),
+                    note: text(column: 6, statement: statement),
+                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 7)),
+                    revokedAt: revokedAt
+                )
+            )
+        }
+        return result
+    }
+
     // MARK: - Cloud merge
 
     func mergeRemoteWorkshop(_ data: RemoteWorkshopData) throws -> Int {
-        guard let db else { throw DatabaseError.openFailed("数据库未打开") }
         try execute("BEGIN IMMEDIATE TRANSACTION;")
         do {
             let now = Date().timeIntervalSince1970
 
             for entry in data.customers {
                 try withStatement("""
-                    INSERT INTO customers(name, created_at, updated_at) VALUES (?, ?, ?)
+                    INSERT INTO customers(name, unit_price_cents, created_at, updated_at) VALUES (?, ?, ?, ?)
                     ON CONFLICT(name) DO UPDATE SET
+                        unit_price_cents = COALESCE(excluded.unit_price_cents, customers.unit_price_cents),
                         created_at = excluded.created_at,
                         updated_at = excluded.updated_at;
                     """) { statement in
                     let createdAt = entry.createdAt.flatMap(CloudDate.parse)?.timeIntervalSince1970 ?? now
                     let updatedAt = entry.updatedAt.flatMap(CloudDate.parse)?.timeIntervalSince1970 ?? createdAt
                     try bindText(entry.name, at: 1, in: statement)
-                    sqlite3_bind_double(statement, 2, createdAt)
-                    sqlite3_bind_double(statement, 3, updatedAt)
+                    bindOptionalInt64(entry.unitPriceCents, at: 2, in: statement)
+                    sqlite3_bind_double(statement, 3, createdAt)
+                    sqlite3_bind_double(statement, 4, updatedAt)
                     try stepDone(statement)
                 }
             }
@@ -484,6 +788,50 @@ final class Database {
                     sqlite3_bind_double(statement, 3, updatedAt)
                     try stepDone(statement)
                 }
+            }
+
+            var batchIDsByNumber: [String: Int64] = [:]
+            var activeBatchNumbers: Set<String> = []
+            for batch in data.settlementBatches ?? [] {
+                try withStatement("""
+                    INSERT INTO settlement_batches(
+                        batch_no, customer, settlement_date, receivable_cents,
+                        actual_amount_cents, note, created_at, revoked_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(batch_no) DO UPDATE SET
+                        customer = excluded.customer,
+                        settlement_date = excluded.settlement_date,
+                        receivable_cents = excluded.receivable_cents,
+                        actual_amount_cents = excluded.actual_amount_cents,
+                        note = excluded.note,
+                        created_at = excluded.created_at,
+                        revoked_at = excluded.revoked_at;
+                    """) { statement in
+                    let createdAt = CloudDate.parse(batch.createdAt)?.timeIntervalSince1970 ?? now
+                    let revokedAt = batch.revokedAt.flatMap(CloudDate.parse)?.timeIntervalSince1970
+                    try bindText(batch.batchNo, at: 1, in: statement)
+                    try bindText(batch.customer, at: 2, in: statement)
+                    try bindText(batch.settlementDate, at: 3, in: statement)
+                    sqlite3_bind_int64(statement, 4, batch.receivableCents)
+                    sqlite3_bind_int64(statement, 5, batch.actualAmountCents)
+                    try bindText(batch.note, at: 6, in: statement)
+                    sqlite3_bind_double(statement, 7, createdAt)
+                    if let revokedAt {
+                        sqlite3_bind_double(statement, 8, revokedAt)
+                    } else {
+                        sqlite3_bind_null(statement, 8)
+                        activeBatchNumbers.insert(batch.batchNo)
+                    }
+                    try stepDone(statement)
+                }
+                let batchID: Int64 = try withStatement("SELECT id FROM settlement_batches WHERE batch_no = ?;") { statement in
+                    try bindText(batch.batchNo, at: 1, in: statement)
+                    guard sqlite3_step(statement) == SQLITE_ROW else {
+                        throw DatabaseError.stepFailed("云端结清批次写入后无法读取：\(batch.batchNo)")
+                    }
+                    return sqlite3_column_int64(statement, 0)
+                }
+                batchIDsByNumber[batch.batchNo] = batchID
             }
 
             for remoteBill in data.bills {
@@ -511,14 +859,17 @@ final class Database {
                     return sqlite3_column_int64(statement, 0)
                 }
 
+                let localItemsBeforeMerge = try loadBillItems(billID: billID)
                 try withStatement("DELETE FROM bill_items WHERE bill_id = ?;") { statement in
                     sqlite3_bind_int64(statement, 1, billID)
                     try stepDone(statement)
                 }
 
                 try withStatement("""
-                    INSERT INTO bill_items(bill_id, customer, employee, model, quantity, color_count)
-                    VALUES (?, ?, ?, ?, ?, ?);
+                    INSERT INTO bill_items(
+                        bill_id, customer, employee, model, quantity, color_count,
+                        unit_price_cents, settlement_batch_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
                     """) { insertItem in
                     for item in remoteBill.items {
                         guard item.quantity > 0, (1...5).contains(item.colorCount) else {
@@ -532,6 +883,21 @@ final class Database {
                         try bindText(item.model, at: 4, in: insertItem)
                         sqlite3_bind_int64(insertItem, 5, Int64(item.quantity))
                         sqlite3_bind_int64(insertItem, 6, Int64(item.colorCount))
+                        let preservedPrice = item.unitPriceCents ?? localItemsBeforeMerge.first(where: {
+                            $0.customer == item.customer
+                                && $0.employee == item.employee
+                                && $0.model == item.model
+                                && $0.quantity == item.quantity
+                                && $0.colorCount == item.colorCount
+                        })?.unitPriceCents
+                        bindOptionalInt64(preservedPrice, at: 7, in: insertItem)
+                        if let batchNo = item.settlementBatchNo,
+                           activeBatchNumbers.contains(batchNo),
+                           let batchID = batchIDsByNumber[batchNo] {
+                            sqlite3_bind_int64(insertItem, 8, batchID)
+                        } else {
+                            sqlite3_bind_null(insertItem, 8)
+                        }
                         try stepDone(insertItem)
                     }
                 }

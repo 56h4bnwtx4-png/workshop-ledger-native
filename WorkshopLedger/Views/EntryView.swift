@@ -173,7 +173,7 @@ struct EntryView: View {
                     Text("计件记录")
                         .font(.system(size: 19, weight: .bold))
                         .foregroundColor(AppTheme.text)
-                    Text("客户、员工从设置页维护的档案中选择；型号手动填写，数量仅支持正整数；色数可选 1–5，计酬工作量按数量×色数计算。")
+                    Text("客户、员工从设置页维护的档案中选择；型号手动填写。加工单价按客户档案自动带出，应收金额 = 单价 × 数量 × 色数。")
                         .font(.system(size: 12))
                         .foregroundColor(AppTheme.textMuted)
                         .lineSpacing(2)
@@ -249,13 +249,16 @@ struct EntryView: View {
         HStack(alignment: .top, spacing: columnSpacing) {
             customerPicker(row: $rows[index])
                 .frame(width: columnWidths.customer)
+                .disabled(rows[index].isLocked)
             employeePicker(row: $rows[index])
                 .frame(width: columnWidths.employee)
+                .disabled(rows[index].isLocked)
             ModelAutocompleteField(
                 text: $rows[index].model,
                 suggestions: modelSuggestions(for: rows[index].model)
             )
             .frame(width: columnWidths.model)
+            .disabled(rows[index].isLocked)
 
             TextField("请输入数量", text: $rows[index].quantity)
                 .keyboardType(.numberPad)
@@ -272,6 +275,7 @@ struct EntryView: View {
                         rows[index].quantity = filtered
                     }
                 }
+                .disabled(rows[index].isLocked)
 
             HStack(spacing: 8) {
                 Menu {
@@ -303,22 +307,28 @@ struct EntryView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
                 .frame(width: columnWidths.color)
+                .disabled(rows[index].isLocked)
 
                 Button(action: { deleteRow(at: index) }) {
-                    Image(systemName: "trash")
+                    Image(systemName: rows[index].isLocked ? "lock.fill" : "trash")
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(AppTheme.danger)
+                        .foregroundColor(rows[index].isLocked ? AppTheme.textMuted : AppTheme.danger)
                         .frame(width: columnWidths.deleteAction, height: 44)
-                        .background(AppTheme.dangerSoft)
+                        .background(rows[index].isLocked ? AppTheme.surfaceSoft : AppTheme.dangerSoft)
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
                 .buttonStyle(PlainButtonStyle())
+                .disabled(rows[index].isLocked)
             }
             .frame(width: columnWidths.colorAndDelete)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
-        .background(alternate ? Color(red: 0.985, green: 0.987, blue: 0.991) : Color.white)
+        .background(
+            rows[index].isLocked
+                ? Color(red: 0.955, green: 0.965, blue: 0.970)
+                : (alternate ? Color(red: 0.985, green: 0.987, blue: 0.991) : Color.white)
+        )
     }
 
     private var actionBar: some View {
@@ -520,10 +530,11 @@ struct EntryView: View {
     }
 
     private func addRow() {
+        let previous = rows.last
         rows.append(
             EntryRow.empty(
-                customer: store.allCustomerNames.first ?? "",
-                employee: store.allEmployeeNames.first ?? ""
+                customer: previous?.customer ?? "",
+                employee: previous?.employee ?? ""
             )
         )
     }
@@ -702,6 +713,15 @@ struct EntryView: View {
         }
         if let invalid = candidate.first(where: { $0.quantityValue == nil }) {
             activeAlert = .error("第 \(candidate.firstIndex(of: invalid).map { $0 + 1 } ?? 1) 条记录的数量必须是正整数。")
+            return
+        }
+        if let missingPrice = candidate.first(where: {
+            !$0.isLocked
+                && $0.storedUnitPriceCents == nil
+                && store.unitPriceCents(forCustomer: $0.customer) == nil
+        }) {
+            let index = candidate.firstIndex(of: missingPrice).map { $0 + 1 } ?? 1
+            activeAlert = .error("第 \(index) 条记录的客户“\(missingPrice.customer)”尚未设置加工单价，请先到客户管理页设置。")
             return
         }
 

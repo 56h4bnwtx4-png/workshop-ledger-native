@@ -12,11 +12,23 @@ struct DirectoryView: View {
         switch activeKind {
         case .customer:
             return store.customers.map {
-                DirectoryMember(id: $0.id, name: $0.name, createdAt: $0.createdAt, updatedAt: $0.updatedAt)
+                DirectoryMember(
+                    id: $0.id,
+                    name: $0.name,
+                    unitPriceCents: $0.unitPriceCents,
+                    createdAt: $0.createdAt,
+                    updatedAt: $0.updatedAt
+                )
             }
         case .employee:
             return store.employees.map {
-                DirectoryMember(id: $0.id, name: $0.name, createdAt: $0.createdAt, updatedAt: $0.updatedAt)
+                DirectoryMember(
+                    id: $0.id,
+                    name: $0.name,
+                    unitPriceCents: nil,
+                    createdAt: $0.createdAt,
+                    updatedAt: $0.updatedAt
+                )
             }
         }
     }
@@ -44,6 +56,8 @@ struct DirectoryView: View {
                         }
 
                         settingsCard
+                        settlementCard
+                            .padding(.top, 18)
                         cloudCard
                             .padding(.top, 18)
                     }
@@ -63,12 +77,16 @@ struct DirectoryView: View {
                 DirectoryEditorSheet(
                     kind: kind,
                     member: member,
-                    onSave: { name in
-                        try save(kind: kind, existing: member, name: name)
+                    onSave: { name, unitPriceCents in
+                        try save(kind: kind, existing: member, name: name, unitPriceCents: unitPriceCents)
                     }
                 )
             case .detail(let kind, let member):
                 DirectoryDetailSheet(kind: kind, member: member)
+            case .settlement:
+                SettlementView {
+                    activeSheet = nil
+                }
             case .cloud:
                 CloudBackupView {
                     activeSheet = nil
@@ -196,6 +214,41 @@ struct DirectoryView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(AppTheme.line, lineWidth: 1)
         )
+    }
+
+    private var settlementCard: some View {
+        Panel {
+            HStack(spacing: 16) {
+                Image(systemName: "checkmark.seal")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(AppTheme.accentDark)
+                    .frame(width: 48, height: 48)
+                    .background(AppTheme.accentSoft)
+                    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("清账管理")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(AppTheme.text)
+                    Text("按客户查看已结清与未结清流水，支持整批结清和撤销整个结清批次。")
+                        .font(.system(size: 12))
+                        .foregroundColor(AppTheme.textMuted)
+                }
+
+                Spacer()
+
+                Button {
+                    activeSheet = .settlement
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "checkmark.circle")
+                        Text("打开清账管理")
+                    }
+                }
+                .buttonStyle(SecondaryButtonStyle())
+            }
+            .padding(20)
+        }
     }
 
     private var cloudCard: some View {
@@ -392,7 +445,12 @@ struct DirectoryView: View {
         return formatter.string(from: date)
     }
 
-    private func save(kind: DirectoryKind, existing: DirectoryMember?, name: String) throws {
+    private func save(
+        kind: DirectoryKind,
+        existing: DirectoryMember?,
+        name: String,
+        unitPriceCents: Int64?
+    ) throws {
         let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { throw DirectoryValidationError.emptyName }
         guard value.count <= 40 else { throw DirectoryValidationError.tooLong }
@@ -400,12 +458,12 @@ struct DirectoryView: View {
         do {
             switch (kind, existing) {
             case (.customer, nil):
-                try store.addCustomer(name: value)
+                try store.addCustomer(name: value, unitPriceCents: unitPriceCents)
             case (.customer, let member?):
                 guard let customer = store.customers.first(where: { $0.id == member.id }) else {
                     throw DirectoryValidationError.notFound
                 }
-                try store.updateCustomer(customer, name: value)
+                try store.updateCustomer(customer, name: value, unitPriceCents: unitPriceCents)
             case (.employee, nil):
                 try store.addEmployee(name: value)
             case (.employee, let member?):
@@ -469,6 +527,7 @@ private enum DirectoryKind: Equatable {
 private struct DirectoryMember: Identifiable {
     let id: Int64
     let name: String
+    let unitPriceCents: Int64?
     let createdAt: Date
     let updatedAt: Date
 }
@@ -476,6 +535,7 @@ private struct DirectoryMember: Identifiable {
 private enum DirectorySheetItem: Identifiable {
     case editor(DirectoryKind, DirectoryMember?)
     case detail(DirectoryKind, DirectoryMember)
+    case settlement
     case cloud
 
     var id: String {
@@ -484,6 +544,8 @@ private enum DirectorySheetItem: Identifiable {
             return "editor-\(kind.singular)-\(member?.id ?? 0)"
         case .detail(let kind, let member):
             return "detail-\(kind.singular)-\(member.id)"
+        case .settlement:
+            return "settlement"
         case .cloud:
             return "cloud"
         }
@@ -502,6 +564,8 @@ private enum DirectoryValidationError: LocalizedError {
     case tooLong
     case duplicate
     case notFound
+    case invalidPrice
+    case cannotClearPrice
 
     var errorDescription: String? {
         switch self {
@@ -509,6 +573,8 @@ private enum DirectoryValidationError: LocalizedError {
         case .tooLong: return "名称最多 40 个字符。"
         case .duplicate: return "该名称已存在，请使用其他名称。"
         case .notFound: return "该档案已不存在，请刷新后重试。"
+        case .invalidPrice: return "加工单价必须是大于 0、最多两位小数的金额。"
+        case .cannotClearPrice: return "已设置的加工单价不能清空；后续修改只影响新录入流水。"
         }
     }
 }
@@ -516,17 +582,21 @@ private enum DirectoryValidationError: LocalizedError {
 private struct DirectoryEditorSheet: View {
     let kind: DirectoryKind
     let member: DirectoryMember?
-    let onSave: (String) throws -> Void
+    let onSave: (String, Int64?) throws -> Void
 
     @Environment(\.presentationMode) private var presentationMode
     @State private var name: String
+    @State private var priceText: String
     @State private var errorMessage = ""
+    @State private var showingPriceConfirmation = false
+    @State private var pendingPriceCents: Int64?
 
-    init(kind: DirectoryKind, member: DirectoryMember?, onSave: @escaping (String) throws -> Void) {
+    init(kind: DirectoryKind, member: DirectoryMember?, onSave: @escaping (String, Int64?) throws -> Void) {
         self.kind = kind
         self.member = member
         self.onSave = onSave
         _name = State(initialValue: member?.name ?? "")
+        _priceText = State(initialValue: MoneyText.plainYuan(member?.unitPriceCents))
     }
 
     var body: some View {
@@ -542,7 +612,9 @@ private struct DirectoryEditorSheet: View {
                     Text("\(member == nil ? "新增" : "编辑")\(kind.singular)")
                         .font(.system(size: 20, weight: .bold))
                         .foregroundColor(AppTheme.text)
-                    Text("保存后立即用于计件录入页下拉选项。")
+                    Text(kind == .customer
+                         ? "同一客户的所有型号共用此加工单价。"
+                         : "保存后立即用于计件录入页下拉选项。")
                         .font(.system(size: 12))
                         .foregroundColor(AppTheme.textMuted)
                 }
@@ -563,11 +635,40 @@ private struct DirectoryEditorSheet: View {
                             .stroke(errorMessage.isEmpty ? AppTheme.line : AppTheme.danger, lineWidth: 1)
                     )
                     .onChange(of: name) { _ in errorMessage = "" }
-                if !errorMessage.isEmpty {
-                    Text(errorMessage)
-                        .font(.system(size: 12))
-                        .foregroundColor(AppTheme.danger)
+            }
+
+            if kind == .customer {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("加工单价（元 / 件·色）")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(AppTheme.textMuted)
+                    HStack(spacing: 8) {
+                        Text("¥")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(AppTheme.textMuted)
+                        TextField("例如 0.35", text: $priceText)
+                            .keyboardType(.decimalPad)
+                            .font(.system(size: 15))
+                            .onChange(of: priceText) { _ in errorMessage = "" }
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 44)
+                    .background(Color.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(errorMessage.isEmpty ? AppTheme.line : AppTheme.danger, lineWidth: 1)
+                    )
+                    Text("应收金额 = 加工单价 × 数量 × 色数。每条流水会保存录入当时的单价。")
+                        .font(.system(size: 11))
+                        .foregroundColor(AppTheme.textFaint)
                 }
+            }
+
+            if !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(.system(size: 12))
+                    .foregroundColor(AppTheme.danger)
             }
 
             Spacer(minLength: 0)
@@ -579,19 +680,69 @@ private struct DirectoryEditorSheet: View {
                 }
                 .buttonStyle(SecondaryButtonStyle())
                 Button("保存") {
-                    do {
-                        try onSave(name)
-                        presentationMode.wrappedValue.dismiss()
-                    } catch {
-                        errorMessage = error.localizedDescription
-                    }
+                    attemptSave()
                 }
                 .buttonStyle(PrimaryButtonStyle())
             }
         }
         .padding(24)
-        .frame(minWidth: 430, minHeight: 280)
+        .frame(minWidth: 470, minHeight: kind == .customer ? 410 : 300)
         .background(AppTheme.background)
+        .alert(isPresented: $showingPriceConfirmation) {
+            Alert(
+                title: Text("首次设置加工单价"),
+                message: Text("保存后，该客户所有尚未保存单价的历史流水都会使用本次单价，且以后修改单价只影响新录入流水。是否继续？"),
+                primaryButton: .default(Text("确认并覆盖历史")) {
+                    performSave(priceCents: pendingPriceCents)
+                },
+                secondaryButton: .cancel(Text("返回检查"))
+            )
+        }
+    }
+
+    private func attemptSave() {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            errorMessage = DirectoryValidationError.emptyName.localizedDescription
+            return
+        }
+        guard trimmedName.count <= 40 else {
+            errorMessage = DirectoryValidationError.tooLong.localizedDescription
+            return
+        }
+
+        var priceCents: Int64?
+        if kind == .customer {
+            let trimmedPrice = priceText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedPrice.isEmpty {
+                if member?.unitPriceCents != nil {
+                    errorMessage = DirectoryValidationError.cannotClearPrice.localizedDescription
+                    return
+                }
+            } else {
+                guard let parsed = MoneyText.parseCents(trimmedPrice), parsed > 0 else {
+                    errorMessage = DirectoryValidationError.invalidPrice.localizedDescription
+                    return
+                }
+                priceCents = parsed
+            }
+        }
+
+        if kind == .customer, member?.unitPriceCents == nil, priceCents != nil {
+            pendingPriceCents = priceCents
+            showingPriceConfirmation = true
+        } else {
+            performSave(priceCents: priceCents)
+        }
+    }
+
+    private func performSave(priceCents: Int64?) {
+        do {
+            try onSave(name.trimmingCharacters(in: .whitespacesAndNewlines), priceCents)
+            presentationMode.wrappedValue.dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 
@@ -620,6 +771,9 @@ private struct DirectoryDetailSheet: View {
             }
 
             detailRow(label: "名称", value: member.name)
+            if kind == .customer {
+                detailRow(label: "加工单价", value: MoneyText.yuan(member.unitPriceCents))
+            }
             detailRow(label: "档案编号", value: String(member.id))
             detailRow(label: "创建时间", value: formatTime(member.createdAt))
             detailRow(label: "最近修改", value: formatTime(member.updatedAt))

@@ -7,6 +7,7 @@ enum CloudDefaults {
 
 struct RemoteDirectoryRecord: Codable, Equatable {
     let name: String
+    let unitPriceCents: Int64?
     let createdAt: String?
     let updatedAt: String?
 }
@@ -17,6 +18,8 @@ struct RemoteBillItemRecord: Codable, Equatable {
     let model: String
     let quantity: Int
     let colorCount: Int
+    let unitPriceCents: Int64?
+    let settlementBatchNo: String?
 }
 
 struct RemoteBillRecord: Codable, Equatable {
@@ -25,11 +28,23 @@ struct RemoteBillRecord: Codable, Equatable {
     let items: [RemoteBillItemRecord]
 }
 
+struct RemoteSettlementBatchRecord: Codable, Equatable {
+    let batchNo: String
+    let customer: String
+    let settlementDate: String
+    let receivableCents: Int64
+    let actualAmountCents: Int64
+    let note: String
+    let createdAt: String
+    let revokedAt: String?
+}
+
 struct RemoteWorkshopData: Codable, Equatable {
     let schemaVersion: Int
     let customers: [RemoteDirectoryRecord]
     let employees: [RemoteDirectoryRecord]
     let bills: [RemoteBillRecord]
+    let settlementBatches: [RemoteSettlementBatchRecord]?
 }
 
 struct RemoteSnapshotRecord: Codable, Identifiable, Equatable {
