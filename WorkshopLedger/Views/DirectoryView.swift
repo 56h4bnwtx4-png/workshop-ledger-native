@@ -288,7 +288,7 @@ struct CustomerDirectoryView: View {
                 .foregroundColor(customer.unitPriceMilliYuan == nil ? AppTheme.danger : AppTheme.text)
                 .frame(width: 150, alignment: .trailing)
 
-            Text(formatTime(customer.updatedAt))
+            Text(formatDirectoryTime(customer.updatedAt))
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(AppTheme.textMuted)
                 .frame(width: 150, alignment: .leading)
