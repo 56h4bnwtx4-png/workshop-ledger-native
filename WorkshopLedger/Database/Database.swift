@@ -236,6 +236,11 @@ final class Database {
         return value.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) }
     }
 
+    private func optionalInt64(column: Int32, statement: OpaquePointer) -> Int64? {
+        guard sqlite3_column_type(statement, column) != SQLITE_NULL else { return nil }
+        return sqlite3_column_int64(statement, column)
+    }
+
     private var lastInsertID: Int64 {
         guard let db else { return 0 }
         return sqlite3_last_insert_rowid(db)

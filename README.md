@@ -89,9 +89,9 @@ tools/generate_icons.py          可选的图标重新生成脚本
 2. 将本目录全部文件上传到仓库，默认分支使用 \`main\`。
 3. 打开仓库的 **Actions** 页面，选择 **Build unsigned arm64 IPA**。
 4. 点击 **Run workflow**。
-5. 构建完成后，在该次运行底部下载 \`WorkshopLedger-v1.3.0-iOS-arm64-unsigned\` Artifact。
+5. 构建完成后，在该次运行底部下载 \`WorkshopLedger-v1.4.0-iOS-arm64-unsigned\` Artifact。
 6. 解压 Artifact，得到：
-   - \`WorkshopLedger-v1.3.0-iOS-arm64-unsigned.ipa\`
+   - \`WorkshopLedger-v1.4.0-iOS-arm64-unsigned.ipa\`
    - \`SHA256SUMS.txt\`
 7. 将 IPA 传到 iPad，使用 TrollStore 打开并安装。
 
