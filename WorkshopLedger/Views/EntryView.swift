@@ -548,12 +548,46 @@ struct EntryView: View {
     }
 
     private func modelSuggestions(for text: String) -> [String] {
-        let query = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let query = normalizedModelSearchText(text)
         guard query.count >= 2 else { return [] }
+
         return store.allModelNames
-            .filter { $0.lowercased().contains(query) }
+            .compactMap { model -> (model: String, rank: Int, length: Int)? in
+                let normalized = normalizedModelSearchText(model)
+                guard let match = normalized.range(of: query) else { return nil }
+                let rank: Int
+                if normalized == query {
+                    rank = 0
+                } else if match.lowerBound == normalized.startIndex {
+                    rank = 1
+                } else {
+                    rank = 2
+                }
+                return (model, rank, normalized.count)
+            }
+            .sorted { left, right in
+                if left.rank != right.rank { return left.rank < right.rank }
+                if left.length != right.length { return left.length < right.length }
+                return left.model.localizedStandardCompare(right.model) == .orderedAscending
+            }
             .prefix(4)
-            .map { $0 }
+            .map { $0.model }
+    }
+
+    private func normalizedModelSearchText(_ text: String) -> String {
+        let folded = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(
+                options: [.caseInsensitive, .widthInsensitive],
+                locale: Locale(identifier: "zh_CN")
+            )
+        return folded
+            .replacingOccurrences(of: "‐", with: "-")
+            .replacingOccurrences(of: "‑", with: "-")
+            .replacingOccurrences(of: "‒", with: "-")
+            .replacingOccurrences(of: "–", with: "-")
+            .replacingOccurrences(of: "—", with: "-")
+            .replacingOccurrences(of: "−", with: "-")
     }
 
     private func scheduleAutoSave() {

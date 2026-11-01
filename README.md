@@ -1,6 +1,14 @@
-# 车间计件 · iPadOS 原生版 v1.4.0
+# 车间计件 · iPadOS 原生版 v1.4.1
 
 纯 SwiftUI 原生应用，不使用 WebView。账本保存在应用沙盒内的 SQLite 数据库，正式账单会通过 HTTPS 自动备份到阿里云，草稿始终只留在本机。
+
+## v1.4.1 更新
+
+- 型号输入框新增本地内置型号词库，与历史账单型号合并检索
+- 输入至少 2 个连续字符时显示候选，最多 4 条，支持型号中任意连续片段匹配
+- 内置型号词库只用于联想，不生成账单，不进入 SQLite、统计、CSV 或云端数据
+- 联想仅作用于型号输入框，客户、员工、数量、色数输入框保持原逻辑
+- 全新型号仍可自由手动录入，提交后会进入后续历史型号候选池
 
 ## v1.4.0 更新
 
@@ -42,7 +50,7 @@
 - 固定横屏，仅支持 iPad / arm64
 - iPadOS 15.0 及以上
 - 全部账单：正式账单与本地草稿按日期倒序合并展示
-- 计件录入：客户/员工下拉、型号自由输入、历史型号本地联想、数量正整数、色数 1–5
+- 计件录入：客户/员工下拉、型号自由输入、内置型号词库与历史流水本地联想、数量正整数、色数 1–5
 - 草稿：按日期绑定、自动保存、后台保存、放弃草稿
 - 浏览正式账单但未修改即返回时，不生成草稿
 - 可修改账单日期补记过去流水
@@ -78,10 +86,18 @@ https://47-101-39-110.sslip.io
 
 \`\`\`text
 WorkshopLedger/                  SwiftUI 源码、SQLite、钥匙串、云端客户端
+WorkshopLedger/Resources/        构建时注入的私有型号词库资源
 project.yml                      XcodeGen 工程定义
 .github/workflows/build-ipa.yml  GitHub Actions 无签名 IPA 构建
 tools/generate_icons.py          可选的图标重新生成脚本
+tools/inject_model_catalog.py     私有型号词库注入与校验脚本
 \`\`\`
+
+## 私有型号词库
+
+型号词库通过 GitHub Actions Secret `MODEL_CATALOG_B64` 在构建时注入，公开源码不包含实际型号清单。Secret 内容为 UTF-8 型号清单（一行一个型号）的 Base64。未设置 Secret 时仍可构建，但只会使用本机历史账单型号。
+
+注入脚本会去空、去重，并限制最多 2000 条、单条最长 100 字符。词库文件仅打包进 App Bundle，不写数据库，也不参与云端同步。
 
 ## GitHub Actions 生成 IPA
 
@@ -89,9 +105,9 @@ tools/generate_icons.py          可选的图标重新生成脚本
 2. 将本目录全部文件上传到仓库，默认分支使用 \`main\`。
 3. 打开仓库的 **Actions** 页面，选择 **Build unsigned arm64 IPA**。
 4. 点击 **Run workflow**。
-5. 构建完成后，在该次运行底部下载 \`WorkshopLedger-v1.4.0-iOS-arm64-unsigned\` Artifact。
+5. 构建完成后，在该次运行底部下载 \`WorkshopLedger-v1.4.1-iOS-arm64-unsigned\` Artifact。
 6. 解压 Artifact，得到：
-   - \`WorkshopLedger-v1.4.0-iOS-arm64-unsigned.ipa\`
+   - \`WorkshopLedger-v1.4.1-iOS-arm64-unsigned.ipa\`
    - \`SHA256SUMS.txt\`
 7. 将 IPA 传到 iPad，使用 TrollStore 打开并安装。
 

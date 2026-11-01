@@ -382,7 +382,9 @@ final class AppStore: ObservableObject {
     }
 
     var allModelNames: [String] {
-        uniqueSorted(bills.flatMap { $0.items.map(\.model) })
+        uniqueSorted(
+            BundledModelCatalog.names + bills.flatMap { $0.items.map(\.model) }
+        )
     }
 
     func draftRows(on date: Date) -> [EntryRow] {
