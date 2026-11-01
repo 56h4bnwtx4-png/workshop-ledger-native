@@ -29,6 +29,10 @@ struct SettlementView: View {
         }
     }
 
+    private var batchCustomerNames: [String] {
+        store.customersUsingBatchSettlement.map(\.name)
+    }
+
     private var activeBatches: [SettlementBatch] {
         store.settlementBatches
             .filter { $0.customer == customerName && !$0.isRevoked }
@@ -40,7 +44,7 @@ struct SettlementView: View {
     }
 
     private var selectedReceivable: Int64 {
-        selectedRows.compactMap(\.receivableCents).reduce(0, +)
+        selectedRows.compactMap(\.receivableMilliYuan).reduce(0, +)
     }
 
     private var unsettledRows: [SettlementRow] {
@@ -92,7 +96,7 @@ struct SettlementView: View {
             }
         }
         .onAppear(perform: ensureCustomerSelection)
-        .onChange(of: store.allCustomerNames) { _ in ensureCustomerSelection() }
+        .onChange(of: store.customersUsingBatchSettlement) { _ in ensureCustomerSelection() }
         .onChange(of: customerName) { _ in
             selectedItemIDs.removeAll()
             statusMessage = ""
@@ -106,7 +110,7 @@ struct SettlementView: View {
                     try store.createSettlementBatch(
                         itemIDs: selectedRows.map(\.id),
                         settlementDate: date,
-                        actualAmountCents: amount,
+                        actualAmountMilliYuan: amount,
                         note: note
                     )
                     showingBatchSheet = false
@@ -151,7 +155,7 @@ struct SettlementView: View {
                 Spacer()
 
                 Menu {
-                    ForEach(store.allCustomerNames, id: \.self) { name in
+                    ForEach(batchCustomerNames, id: \.self) { name in
                         Button(name) {
                             customerName = name
                         }
@@ -180,9 +184,9 @@ struct SettlementView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(PlainButtonStyle())
-                .disabled(store.allCustomerNames.isEmpty)
+                .disabled(batchCustomerNames.isEmpty)
 
-                if let price = store.unitPriceCents(forCustomer: customerName) {
+                if let price = store.unitPriceMilliYuan(forCustomer: customerName) {
                     VStack(alignment: .trailing, spacing: 3) {
                         Text("当前加工单价")
                             .font(.system(size: 10, weight: .semibold))
@@ -263,9 +267,9 @@ struct SettlementView: View {
                 .buttonStyle(PlainButtonStyle())
             }
             HStack(spacing: 16) {
-                compactAmount("应收", batch.receivableCents)
-                compactAmount("实收", batch.actualAmountCents)
-                compactAmount("差额", batch.differenceCents)
+                compactAmount("应收", batch.receivableMilliYuan)
+                compactAmount("实收", batch.actualAmountMilliYuan)
+                compactAmount("差额", batch.differenceMilliYuan)
             }
             Text("结款日期 \(DateKey.display(batch.settlementDate))\(batch.note.isEmpty ? "" : " · \(batch.note)")")
                 .font(.system(size: 11))
@@ -419,13 +423,13 @@ struct SettlementView: View {
             tableCell(row.item.employee, width: 100)
             tableCell(String(row.item.quantity), width: 64, align: .trailing)
             tableCell("\(row.item.colorCount) 色", width: 56)
-            tableCell(MoneyText.yuan(row.item.unitPriceCents), width: 108)
+            tableCell(MoneyText.yuan(row.item.unitPriceMilliYuan), width: 108)
             tableCell(String(row.item.workload), width: 78, align: .trailing)
-            tableCell(MoneyText.yuan(row.receivableCents, empty: "—"), width: 106, weight: .semibold)
+            tableCell(MoneyText.yuan(row.receivableMilliYuan, empty: "—"), width: 106, weight: .semibold)
             statusCell(row)
             tableCell(row.batch.map { DateKey.display($0.settlementDate) } ?? "—", width: 100)
-            tableCell(row.batch.map { MoneyText.yuan($0.actualAmountCents) } ?? "—", width: 106)
-            tableCell(row.batch.map { MoneyText.yuan($0.differenceCents) } ?? "—", width: 100)
+            tableCell(row.batch.map { MoneyText.yuan($0.actualAmountMilliYuan) } ?? "—", width: 106)
+            tableCell(row.batch.map { MoneyText.yuan($0.differenceMilliYuan) } ?? "—", width: 100)
             tableCell(row.batch?.batchNo ?? "—", width: 152, mono: true)
         }
         .frame(minHeight: 44)
@@ -509,12 +513,12 @@ struct SettlementView: View {
     }
 
     private func ensureCustomerSelection() {
-        guard !store.allCustomerNames.isEmpty else {
+        guard !batchCustomerNames.isEmpty else {
             customerName = ""
             return
         }
-        if !store.allCustomerNames.contains(customerName) {
-            customerName = store.allCustomerNames[0]
+        if !batchCustomerNames.contains(customerName) {
+            customerName = batchCustomerNames[0]
         }
     }
 
@@ -536,7 +540,7 @@ private struct SettlementRow: Identifiable {
 
     var id: Int64 { item.id }
     var isSettled: Bool { batch != nil }
-    var receivableCents: Int64? { item.receivableCents }
+    var receivableMilliYuan: Int64? { item.receivableMilliYuan }
 }
 
 private enum SettlementAlert: Identifiable {
@@ -564,11 +568,11 @@ private struct SettlementBatchSheet: View {
     @State private var errorMessage = ""
 
     private var receivable: Int64 {
-        rows.compactMap(\.receivableCents).reduce(0, +)
+        rows.compactMap(\.receivableMilliYuan).reduce(0, +)
     }
 
     private var actualAmount: Int64? {
-        MoneyText.parseCents(amountText)
+        MoneyText.parseMilliYuan(amountText)
     }
 
     init(
@@ -581,7 +585,7 @@ private struct SettlementBatchSheet: View {
         self.rows = rows
         self.onCancel = onCancel
         self.onConfirm = onConfirm
-        let total = rows.compactMap(\.receivableCents).reduce(0, +)
+        let total = rows.compactMap(\.receivableMilliYuan).reduce(0, +)
         _amountText = State(initialValue: MoneyText.plainYuan(total))
     }
 
@@ -646,7 +650,7 @@ private struct SettlementBatchSheet: View {
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
                                 .stroke(AppTheme.line, lineWidth: 1)
                         )
-                        Text("允许与系统应收不一致，差额会随批次保存。")
+                        Text("实际结款不能超过系统应收，客户不允许形成预存款；差额会随批次保存。")
                             .font(.system(size: 11))
                             .foregroundColor(AppTheme.textFaint)
                     }
@@ -686,7 +690,7 @@ private struct SettlementBatchSheet: View {
                                 Text("\(row.item.quantity) × \(row.item.colorCount) 色")
                                     .frame(width: 90, alignment: .leading)
                                 Spacer()
-                                Text(MoneyText.yuan(row.receivableCents, empty: "—"))
+                                Text(MoneyText.yuan(row.receivableMilliYuan, empty: "—"))
                                     .fontWeight(.semibold)
                             }
                             .font(.system(size: 12))
@@ -713,7 +717,11 @@ private struct SettlementBatchSheet: View {
                     .buttonStyle(SecondaryButtonStyle())
                 Button("确认结清并锁定") {
                     guard let actualAmount else {
-                        errorMessage = "请输入有效的实际结款总额，最多两位小数。"
+                        errorMessage = "请输入有效的实际结款总额，最多三位小数。"
+                        return
+                    }
+                    guard actualAmount <= receivable else {
+                        errorMessage = "实际结款金额不能超过系统应收，客户不允许形成预存款。"
                         return
                     }
                     do {

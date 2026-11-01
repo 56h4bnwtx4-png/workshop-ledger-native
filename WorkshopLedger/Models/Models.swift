@@ -1,22 +1,55 @@
 import Foundation
 
+enum CustomerSettlementMode: String, Codable, CaseIterable, Identifiable {
+    case batch = "batch"
+    case annual = "annual"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .batch: return "按批结清"
+        case .annual: return "按年回款"
+        }
+    }
+
+    var shortDescription: String {
+        switch self {
+        case .batch: return "通过清账管理按流水批次结款"
+        case .annual: return "通过客户回款按年度登记到账"
+        }
+    }
+
+    static func parse(_ value: String?) -> CustomerSettlementMode? {
+        guard let value else { return nil }
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "batch", "batch_clear", "clear": return .batch
+        case "annual", "annual_receipt", "receipt": return .annual
+        default: return nil
+        }
+    }
+}
+
 struct Customer: Identifiable, Hashable {
     let id: Int64
     var name: String
-    var unitPriceCents: Int64?
+    var unitPriceMilliYuan: Int64?
+    var settlementMode: CustomerSettlementMode
     var createdAt: Date
     var updatedAt: Date
 
     init(
         id: Int64,
         name: String,
-        unitPriceCents: Int64? = nil,
+        unitPriceMilliYuan: Int64? = nil,
+        settlementMode: CustomerSettlementMode = .batch,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
         self.id = id
         self.name = name
-        self.unitPriceCents = unitPriceCents
+        self.unitPriceMilliYuan = unitPriceMilliYuan
+        self.settlementMode = settlementMode
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -25,12 +58,20 @@ struct Customer: Identifiable, Hashable {
 struct Employee: Identifiable, Hashable {
     let id: Int64
     var name: String
+    var wageMilliYuan: Int64?
     var createdAt: Date
     var updatedAt: Date
 
-    init(id: Int64, name: String, createdAt: Date = Date(), updatedAt: Date = Date()) {
+    init(
+        id: Int64,
+        name: String,
+        wageMilliYuan: Int64? = nil,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
         self.id = id
         self.name = name
+        self.wageMilliYuan = wageMilliYuan
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -44,14 +85,22 @@ struct BillItem: Identifiable, Hashable {
     let model: String
     let quantity: Int
     let colorCount: Int
-    let unitPriceCents: Int64?
+    let unitPriceMilliYuan: Int64?
+    let employeeWageMilliYuan: Int64?
     let settlementBatchID: Int64?
 
     var workload: Int { quantity * colorCount }
-    var receivableCents: Int64? {
-        guard let unitPriceCents else { return nil }
-        return unitPriceCents * Int64(quantity) * Int64(colorCount)
+
+    var receivableMilliYuan: Int64? {
+        guard let unitPriceMilliYuan else { return nil }
+        return MoneyMath.multiply(unitPriceMilliYuan, quantity: quantity, colorCount: colorCount)
     }
+
+    var wageMilliYuan: Int64? {
+        guard let employeeWageMilliYuan else { return nil }
+        return MoneyMath.multiply(employeeWageMilliYuan, quantity: quantity, colorCount: colorCount)
+    }
+
     var isSettled: Bool { settlementBatchID != nil }
 }
 
@@ -64,7 +113,8 @@ struct Bill: Identifiable, Hashable {
     var workload: Int { items.reduce(0) { $0 + $1.workload } }
     var customerCount: Int { Set(items.map(\.customer)).count }
     var employeeCount: Int { Set(items.map(\.employee)).count }
-    var receivableCents: Int64 { items.compactMap(\.receivableCents).reduce(0, +) }
+    var receivableMilliYuan: Int64 { items.compactMap(\.receivableMilliYuan).reduce(0, +) }
+    var wageMilliYuan: Int64 { items.compactMap(\.wageMilliYuan).reduce(0, +) }
     var settledCount: Int { items.filter(\.isSettled).count }
 }
 
@@ -73,13 +123,39 @@ struct SettlementBatch: Identifiable, Hashable {
     let batchNo: String
     let customer: String
     let settlementDate: Date
-    let receivableCents: Int64
-    let actualAmountCents: Int64
+    let receivableMilliYuan: Int64
+    let actualAmountMilliYuan: Int64
     let note: String
     let createdAt: Date
     let revokedAt: Date?
 
-    var differenceCents: Int64 { actualAmountCents - receivableCents }
+    var differenceMilliYuan: Int64 { actualAmountMilliYuan - receivableMilliYuan }
+    var isRevoked: Bool { revokedAt != nil }
+}
+
+struct CustomerReceipt: Identifiable, Hashable {
+    let id: Int64
+    let receiptNo: String
+    let customer: String
+    let amountMilliYuan: Int64
+    let receiptDate: Date
+    let note: String
+    let createdAt: Date
+    let revokedAt: Date?
+
+    var isRevoked: Bool { revokedAt != nil }
+}
+
+struct EmployeePayment: Identifiable, Hashable {
+    let id: Int64
+    let paymentNo: String
+    let employee: String
+    let amountMilliYuan: Int64
+    let paymentDate: Date
+    let note: String
+    let createdAt: Date
+    let revokedAt: Date?
+
     var isRevoked: Bool { revokedAt != nil }
 }
 
@@ -97,7 +173,8 @@ struct EntryRow: Identifiable, Codable, Hashable {
     var quantity: String
     var colorCount: Int
     var existingItemID: Int64? = nil
-    var storedUnitPriceCents: Int64? = nil
+    var storedUnitPriceMilliYuan: Int64? = nil
+    var storedEmployeeWageMilliYuan: Int64? = nil
     var settlementBatchID: Int64? = nil
 
     static func empty(customer: String = "", employee: String = "") -> EntryRow {
@@ -146,6 +223,41 @@ struct QueryRecord: Identifiable, Hashable {
     let quantity: Int
     let colorCount: Int
     let workload: Int
+    let unitPriceMilliYuan: Int64?
+    let employeeWageMilliYuan: Int64?
+    let receivableMilliYuan: Int64?
+    let wageMilliYuan: Int64?
+    let settlementBatchID: Int64?
+}
+
+struct FactoryAnnualSettlement: Equatable {
+    let year: Int
+    let receivableMilliYuan: Int64
+    let receivableCollectedMilliYuan: Int64
+    let payableMilliYuan: Int64
+    let wagesPaidMilliYuan: Int64
+
+    var bookDifferenceMilliYuan: Int64 { receivableMilliYuan - payableMilliYuan }
+    var cashDifferenceMilliYuan: Int64 { receivableCollectedMilliYuan - wagesPaidMilliYuan }
+}
+
+struct CustomerAnnualSettlement: Equatable {
+    let year: Int
+    let customer: String
+    let mode: CustomerSettlementMode
+    let annualReceivableMilliYuan: Int64
+    let annualPaymentMilliYuan: Int64
+    let annualBatchPaymentMilliYuan: Int64
+    let annualReceiptPaymentMilliYuan: Int64
+    let outstandingAtYearEndMilliYuan: Int64
+}
+
+struct EmployeeAnnualSettlement: Equatable {
+    let year: Int
+    let employee: String
+    let annualPayableMilliYuan: Int64
+    let annualPaidMilliYuan: Int64
+    let balanceAtYearEndMilliYuan: Int64
 }
 
 enum DateKey {
@@ -197,8 +309,21 @@ enum DateKey {
     }
 }
 
+enum MoneyMath {
+    static let maxMilliYuan: Int64 = 900_000_000_000
+
+    static func multiply(_ unit: Int64, quantity: Int, colorCount: Int) -> Int64? {
+        guard unit >= 0, quantity > 0, colorCount > 0 else { return nil }
+        let (quantityProduct, quantityOverflow) = unit.multipliedReportingOverflow(by: Int64(quantity))
+        guard !quantityOverflow else { return nil }
+        let (result, colorOverflow) = quantityProduct.multipliedReportingOverflow(by: Int64(colorCount))
+        guard !colorOverflow, result <= maxMilliYuan else { return nil }
+        return result
+    }
+}
+
 enum MoneyText {
-    static func parseCents(_ value: String) -> Int64? {
+    static func parseMilliYuan(_ value: String) -> Int64? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: ",", with: "")
         guard !trimmed.isEmpty, !trimmed.contains("-") else { return nil }
@@ -209,27 +334,31 @@ enum MoneyText {
         guard whole.allSatisfy(\.isNumber), whole.count <= 9 else { return nil }
         let fractionText: String
         if parts.count == 2 {
-            guard parts[1].allSatisfy(\.isNumber), parts[1].count <= 2 else { return nil }
-            fractionText = String(parts[1]).padding(toLength: 2, withPad: "0", startingAt: 0)
+            guard parts[1].allSatisfy(\.isNumber), parts[1].count <= 3 else { return nil }
+            fractionText = String(parts[1]).padding(toLength: 3, withPad: "0", startingAt: 0)
         } else {
-            fractionText = "00"
+            fractionText = "000"
         }
         guard let wholeValue = Int64(whole), let fractionValue = Int64(fractionText) else { return nil }
-        return wholeValue * 100 + fractionValue
+        let (wholePart, overflow) = wholeValue.multipliedReportingOverflow(by: 1_000)
+        guard !overflow else { return nil }
+        let (result, addOverflow) = wholePart.addingReportingOverflow(fractionValue)
+        guard !addOverflow, result <= MoneyMath.maxMilliYuan else { return nil }
+        return result
     }
 
-    static func yuan(_ cents: Int64?, empty: String = "未设置") -> String {
-        guard let cents else { return empty }
-        let sign = cents < 0 ? "-" : ""
-        let absolute = abs(cents)
-        return "\(sign)¥\(absolute / 100).\(String(format: "%02lld", absolute % 100))"
+    static func yuan(_ milliYuan: Int64?, empty: String = "未设置") -> String {
+        guard let milliYuan else { return empty }
+        let sign = milliYuan < 0 ? "-" : ""
+        let absolute = abs(milliYuan)
+        return "\(sign)¥\(absolute / 1_000).\(String(format: "%03lld", absolute % 1_000))"
     }
 
-    static func plainYuan(_ cents: Int64?) -> String {
-        guard let cents else { return "" }
-        let sign = cents < 0 ? "-" : ""
-        let absolute = abs(cents)
-        return "\(sign)\(absolute / 100).\(String(format: "%02lld", absolute % 100))"
+    static func plainYuan(_ milliYuan: Int64?) -> String {
+        guard let milliYuan else { return "" }
+        let sign = milliYuan < 0 ? "-" : ""
+        let absolute = abs(milliYuan)
+        return "\(sign)\(absolute / 1_000).\(String(format: "%03lld", absolute % 1_000))"
     }
 }
 

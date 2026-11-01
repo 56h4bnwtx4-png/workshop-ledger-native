@@ -7,6 +7,9 @@ enum CloudDefaults {
 
 struct RemoteDirectoryRecord: Codable, Equatable {
     let name: String
+    let unitPriceMilliYuan: Int64?
+    let wageMilliYuan: Int64?
+    let settlementMode: String?
     let unitPriceCents: Int64?
     let createdAt: String?
     let updatedAt: String?
@@ -18,6 +21,8 @@ struct RemoteBillItemRecord: Codable, Equatable {
     let model: String
     let quantity: Int
     let colorCount: Int
+    let unitPriceMilliYuan: Int64?
+    let employeeWageMilliYuan: Int64?
     let unitPriceCents: Int64?
     let settlementBatchNo: String?
 }
@@ -32,8 +37,30 @@ struct RemoteSettlementBatchRecord: Codable, Equatable {
     let batchNo: String
     let customer: String
     let settlementDate: String
-    let receivableCents: Int64
-    let actualAmountCents: Int64
+    let receivableMilliYuan: Int64?
+    let actualAmountMilliYuan: Int64?
+    let receivableCents: Int64?
+    let actualAmountCents: Int64?
+    let note: String
+    let createdAt: String
+    let revokedAt: String?
+}
+
+struct RemoteCustomerReceiptRecord: Codable, Equatable {
+    let receiptNo: String
+    let customer: String
+    let amountMilliYuan: Int64
+    let receiptDate: String
+    let note: String
+    let createdAt: String
+    let revokedAt: String?
+}
+
+struct RemoteEmployeePaymentRecord: Codable, Equatable {
+    let paymentNo: String
+    let employee: String
+    let amountMilliYuan: Int64
+    let paymentDate: String
     let note: String
     let createdAt: String
     let revokedAt: String?
@@ -45,6 +72,8 @@ struct RemoteWorkshopData: Codable, Equatable {
     let employees: [RemoteDirectoryRecord]
     let bills: [RemoteBillRecord]
     let settlementBatches: [RemoteSettlementBatchRecord]?
+    let customerReceipts: [RemoteCustomerReceiptRecord]?
+    let employeePayments: [RemoteEmployeePaymentRecord]?
 }
 
 struct RemoteSnapshotRecord: Codable, Identifiable, Equatable {

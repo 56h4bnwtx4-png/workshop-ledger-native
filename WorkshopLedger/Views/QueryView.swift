@@ -5,13 +5,14 @@ struct QueryView: View {
     let onClose: () -> Void
 
     @State private var mode: ReportMode = .ledger
-    @State private var ledgerStart = QueryView.monthStart(Date())
-    @State private var ledgerEnd = DateKey.startOfDay(Date())
+    @State private var selectedYear = Calendar.current.component(.year, from: Date())
+    @State private var ledgerStart = QueryView.yearStart(Calendar.current.component(.year, from: Date()))
+    @State private var ledgerEnd = QueryView.yearEnd(Calendar.current.component(.year, from: Date()))
     @State private var employeeName = ""
-    @State private var selectedEmployeePeriod: ReportPeriod = .month
+    @State private var selectedEmployeePeriod: ReportPeriod = .year
     @State private var employeeReferenceDate = Date()
     @State private var customerName = ""
-    @State private var selectedCustomerPeriod: ReportPeriod = .month
+    @State private var selectedCustomerPeriod: ReportPeriod = .year
     @State private var customerReferenceDate = Date()
     @State private var colorFilter: Int?
     @State private var tableWidth: CGFloat = 900
@@ -72,6 +73,39 @@ struct QueryView: View {
         guard !customerName.isEmpty else { return nil }
         return periodBounds(reference: customerReferenceDate, period: selectedCustomerPeriod)
     }
+
+    private var availableYears: [Int] {
+        let calendar = Calendar.current
+        var years = Set<Int>([Calendar.current.component(.year, from: Date()), selectedYear])
+        for bill in store.bills {
+            years.insert(calendar.component(.year, from: bill.date))
+        }
+        for batch in store.settlementBatches {
+            years.insert(calendar.component(.year, from: batch.settlementDate))
+        }
+        for receipt in store.customerReceipts {
+            years.insert(calendar.component(.year, from: receipt.receiptDate))
+        }
+        for payment in store.employeePayments {
+            years.insert(calendar.component(.year, from: payment.paymentDate))
+        }
+        return years.sorted(by: >)
+    }
+
+    private var factorySettlement: FactoryAnnualSettlement {
+        store.factoryAnnualSettlement(year: selectedYear)
+    }
+
+    private var customerSettlement: CustomerAnnualSettlement? {
+        guard !customerName.isEmpty else { return nil }
+        return store.customerAnnualSettlement(customer: customerName, year: selectedYear)
+    }
+
+    private var employeeSettlement: EmployeeAnnualSettlement? {
+        guard !employeeName.isEmpty else { return nil }
+        return store.employeeAnnualSettlement(employee: employeeName, year: selectedYear)
+    }
+
     var body: some View {
         WorkshopShell {
             WorkshopTopBar(
@@ -88,7 +122,7 @@ struct QueryView: View {
                     PageHeading(
                         eyebrow: "计件数据分析",
                         title: "报表与导出",
-                        note: "所有统计只读取本机正式账单，合计按数量×色数计算，不包含未提交草稿。"
+                        note: "年度结算读取本机正式账单、结款、客户回款与工资发放；金额固定三位小数，不包含未提交草稿。"
                     ) {
                         PageScopeBadge(label: "当前报表", value: mode.scopeTitle)
                     }
@@ -99,10 +133,15 @@ struct QueryView: View {
                 .padding(.bottom, 34)
             }
         }
-        .onAppear(perform: ensureSelections)
+        .onAppear {
+            ensureSelections()
+            ensureYearSelection()
+        }
         .onChange(of: store.allEmployeeNames) { _ in ensureEmployeeSelection() }
         .onChange(of: store.allCustomerNames) { _ in ensureCustomerSelection() }
+        .onChange(of: availableYears) { _ in ensureYearSelection() }
         .onChange(of: mode) { _ in ensureSelections() }
+        .onChange(of: selectedYear) { _ in applyYearToFilters() }
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(items: shareItems)
         }
@@ -131,7 +170,7 @@ struct QueryView: View {
             HStack {
                 Text("共 \(records.count) 条明细")
                 Spacer()
-                Text("计酬合计只汇总数量 × 色数")
+                Text("明细金额按录入时保存的单价计算")
             }
             .font(.system(size: 12))
             .foregroundColor(AppTheme.textFaint)
@@ -178,35 +217,29 @@ struct QueryView: View {
     @ViewBuilder
     private var filters: some View {
         HStack(alignment: .bottom, spacing: 12) {
+            yearPicker
+
             switch mode {
             case .ledger:
-                dateFilterField(title: "开始日期", date: $ledgerStart)
-                dateFilterField(title: "结束日期", date: $ledgerEnd)
-                Button("清空日期") {
-                    ledgerStart = QueryView.monthStart(Date())
-                    ledgerEnd = DateKey.startOfDay(Date())
+                dateFilterField(title: "明细开始日期", date: $ledgerStart)
+                dateFilterField(title: "明细结束日期", date: $ledgerEnd)
+                Button("回到本年度") {
+                    ledgerStart = QueryView.yearStart(selectedYear)
+                    ledgerEnd = QueryView.yearEnd(selectedYear)
                 }
                 .buttonStyle(SecondaryButtonStyle())
             case .employee:
-                periodPicker(title: "统计周期", selection: $selectedEmployeePeriod)
+                periodPicker(title: "明细周期", selection: $selectedEmployeePeriod)
                 personPicker(title: "员工", selection: $employeeName, options: store.allEmployeeNames, placeholder: "暂无员工")
                 dateFilterField(title: selectedEmployeePeriod.fieldLabel, date: $employeeReferenceDate)
             case .customer:
-                periodPicker(title: "统计周期", selection: $selectedCustomerPeriod)
+                periodPicker(title: "明细周期", selection: $selectedCustomerPeriod)
                 personPicker(title: "客户", selection: $customerName, options: store.allCustomerNames, placeholder: "暂无客户")
                 colorPicker
                 dateFilterField(title: selectedCustomerPeriod.fieldLabel, date: $customerReferenceDate)
             }
 
             Spacer(minLength: 12)
-
-            Button(action: exportDatabaseBackup) {
-                HStack(spacing: 7) {
-                    Image(systemName: "externaldrive")
-                    Text("备份数据库")
-                }
-            }
-            .buttonStyle(SecondaryButtonStyle())
 
             Button(action: exportCSV) {
                 HStack(spacing: 7) {
@@ -219,6 +252,28 @@ struct QueryView: View {
         .padding(.horizontal, 22)
         .padding(.vertical, 16)
         .overlay(Rectangle().fill(AppTheme.line).frame(height: 1), alignment: .bottom)
+    }
+
+    private var yearPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("年度结算")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(AppTheme.textMuted)
+            Picker("", selection: $selectedYear) {
+                ForEach(availableYears, id: \.self) { year in
+                    Text("\(year) 年").tag(year)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(MenuPickerStyle())
+            .frame(width: 108, height: 38)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(AppTheme.line, lineWidth: 1)
+            )
+        }
     }
 
     private func dateFilterField(title: String, date: Binding<Date>) -> some View {
@@ -330,6 +385,8 @@ struct QueryView: View {
                     .clipShape(Capsule())
             }
 
+            annualSettlementSection
+
             HStack(spacing: 12) {
                 metricCard(label: "计酬工作量", value: "\(totalWorkload)", unit: "件", primary: true)
                 metricCard(label: "明细记录", value: "\(records.count)", unit: "条", primary: false)
@@ -343,6 +400,151 @@ struct QueryView: View {
         .padding(20)
         .background(AppTheme.surfaceSoft)
         .overlay(Rectangle().fill(AppTheme.line).frame(height: 1), alignment: .bottom)
+    }
+
+    private var annualSettlementSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "calendar.badge.clock")
+                    .foregroundColor(AppTheme.accentDark)
+                Text("\(selectedYear) 年度结算")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(AppTheme.text)
+                Spacer()
+                Text("本年发生额 + 截至年末累计余额")
+                    .font(.system(size: 10))
+                    .foregroundColor(AppTheme.textFaint)
+            }
+
+            switch mode {
+            case .ledger:
+                HStack(spacing: 8) {
+                    amountMetricCard(
+                        label: "年度应收加工费",
+                        value: MoneyText.yuan(factorySettlement.receivableMilliYuan),
+                        caption: "全部客户",
+                        color: AppTheme.accentDark
+                    )
+                    amountMetricCard(
+                        label: "年度客户实际收款",
+                        value: MoneyText.yuan(factorySettlement.receivableCollectedMilliYuan),
+                        caption: "按批 + 按年",
+                        color: Color(red: 0.18, green: 0.44, blue: 0.68)
+                    )
+                    amountMetricCard(
+                        label: "年度应付工资",
+                        value: MoneyText.yuan(factorySettlement.payableMilliYuan),
+                        caption: "全部员工",
+                        color: Color(red: 0.38, green: 0.34, blue: 0.64)
+                    )
+                    amountMetricCard(
+                        label: "年度工资实际支出",
+                        value: MoneyText.yuan(factorySettlement.wagesPaidMilliYuan),
+                        caption: "有效工资单",
+                        color: AppTheme.success
+                    )
+                    amountMetricCard(
+                        label: "年度账面差额",
+                        value: MoneyText.yuan(factorySettlement.bookDifferenceMilliYuan),
+                        caption: "应收 − 应付",
+                        color: factorySettlement.bookDifferenceMilliYuan >= 0 ? AppTheme.text : AppTheme.danger
+                    )
+                }
+            case .employee:
+                if let settlement = employeeSettlement {
+                    HStack(spacing: 8) {
+                        amountMetricCard(
+                            label: "年度应发工资",
+                            value: MoneyText.yuan(settlement.annualPayableMilliYuan),
+                            caption: employeeName,
+                            color: Color(red: 0.38, green: 0.34, blue: 0.64)
+                        )
+                        amountMetricCard(
+                            label: "年度实发工资",
+                            value: MoneyText.yuan(settlement.annualPaidMilliYuan),
+                            caption: "有效工资单",
+                            color: AppTheme.success
+                        )
+                        amountMetricCard(
+                            label: "年末余额",
+                            value: MoneyText.yuan(settlement.balanceAtYearEndMilliYuan),
+                            caption: employeeBalanceCaption(settlement.balanceAtYearEndMilliYuan),
+                            color: settlement.balanceAtYearEndMilliYuan < 0 ? AppTheme.success : AppTheme.accentDark
+                        )
+                    }
+                } else {
+                    Text("请选择员工后查看年度结算。")
+                        .font(.system(size: 12))
+                        .foregroundColor(AppTheme.textMuted)
+                }
+            case .customer:
+                if let settlement = customerSettlement {
+                    HStack(spacing: 8) {
+                        amountMetricCard(
+                            label: "年度加工费应收",
+                            value: MoneyText.yuan(settlement.annualReceivableMilliYuan),
+                            caption: customerName,
+                            color: AppTheme.accentDark
+                        )
+                        amountMetricCard(
+                            label: "年度客户付款",
+                            value: MoneyText.yuan(settlement.annualPaymentMilliYuan),
+                            caption: settlement.mode == .batch ? "按批结清实收" : "按年回款到账",
+                            color: Color(red: 0.18, green: 0.44, blue: 0.68)
+                        )
+                        amountMetricCard(
+                            label: "截至年末累计未收",
+                            value: MoneyText.yuan(settlement.outstandingAtYearEndMilliYuan),
+                            caption: settlement.mode.title,
+                            color: settlement.outstandingAtYearEndMilliYuan > 0 ? AppTheme.danger : AppTheme.success
+                        )
+                    }
+                } else {
+                    Text("请选择客户后查看年度结算。")
+                        .font(.system(size: 12))
+                        .foregroundColor(AppTheme.textMuted)
+                }
+            }
+        }
+        .padding(13)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(AppTheme.line, lineWidth: 1)
+        )
+    }
+
+    private func amountMetricCard(label: String, value: String, caption: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(AppTheme.textMuted)
+                .lineLimit(1)
+            Text(value)
+                .font(.system(size: 17, weight: .bold, design: .monospaced))
+                .foregroundColor(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+            Text(caption)
+                .font(.system(size: 9))
+                .foregroundColor(AppTheme.textFaint)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 11)
+        .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
+        .background(color.opacity(0.055))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(color.opacity(0.16), lineWidth: 1)
+        )
+    }
+
+    private func employeeBalanceCaption(_ balance: Int64) -> String {
+        if balance > 0 { return "年末未发" }
+        if balance < 0 { return "年末预支 / 多发" }
+        return "年末已发清"
     }
 
     private func metricCard(label: String, value: String, unit: String, primary: Bool) -> some View {
@@ -457,9 +659,9 @@ struct QueryView: View {
 
     private var columns: [ReportColumn] {
         switch mode {
-        case .ledger: return [.date, .employee, .customer, .model, .quantity, .color, .workload]
-        case .employee: return [.date, .customer, .model, .quantity, .color, .workload]
-        case .customer: return [.date, .employee, .model, .quantity, .color, .workload]
+        case .ledger: return [.date, .employee, .customer, .model, .quantity, .color, .workload, .receivable, .wage]
+        case .employee: return [.date, .customer, .model, .quantity, .color, .workload, .wage]
+        case .customer: return [.date, .employee, .model, .quantity, .color, .workload, .receivable]
         }
     }
 
@@ -469,7 +671,7 @@ struct QueryView: View {
                 Text(column.title)
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(AppTheme.textMuted)
-                    .frame(width: columnWidth(column), alignment: column == .workload ? .trailing : .leading)
+                    .frame(width: columnWidth(column), alignment: columnAlignment(column))
             }
         }
         .padding(.horizontal, 18)
@@ -482,7 +684,7 @@ struct QueryView: View {
         HStack(spacing: 10) {
             ForEach(columns) { column in
                 reportCell(record: record, column: column)
-                    .frame(width: columnWidth(column), alignment: column == .workload ? .trailing : .leading)
+                    .frame(width: columnWidth(column), alignment: columnAlignment(column))
             }
         }
         .padding(.horizontal, 18)
@@ -492,31 +694,46 @@ struct QueryView: View {
 
     private func reportCell(record: QueryRecord, column: ReportColumn) -> some View {
         Text(column.value(from: record))
-            .font(.system(size: column == .model ? 13 : 12, weight: column == .workload ? .bold : .regular, design: column == .date ? .monospaced : .default))
-            .foregroundColor(column == .workload ? AppTheme.text : AppTheme.textMuted)
+            .font(.system(
+                size: column == .model ? 13 : 12,
+                weight: column.isAmount ? .bold : .regular,
+                design: column == .date || column.isAmount ? .monospaced : .default
+            ))
+            .foregroundColor(column.isAmount ? AppTheme.text : AppTheme.textMuted)
             .lineLimit(1)
+            .minimumScaleFactor(0.78)
     }
-    private func columnWidth(_ column: ReportColumn) -> CGFloat {
-        let total = max(820, tableWidth - 36)
-        let spacing: CGFloat = CGFloat(max(0, columns.count - 1)) * 10
-        let fixed: CGFloat
-        switch mode {
-        case .ledger:
-            fixed = 100 + 100 + 130 + 64 + 56 + 88
-        case .employee:
-            fixed = 100 + 160 + 64 + 56 + 88
-        case .customer:
-            fixed = 100 + 120 + 64 + 56 + 88
-        }
-        let flexible = max(120, total - fixed - spacing)
+
+    private func columnAlignment(_ column: ReportColumn) -> Alignment {
         switch column {
-        case .date: return 100
-        case .employee: return mode == .ledger ? 100 : 120
-        case .customer: return mode == .ledger ? 130 : 160
-        case .model: return flexible
-        case .quantity: return 64
-        case .color: return 56
-        case .workload: return 88
+        case .quantity, .color, .workload, .receivable, .wage:
+            return .trailing
+        default:
+            return .leading
+        }
+    }
+
+    private func columnWidth(_ column: ReportColumn) -> CGFloat {
+        let total = max(880, tableWidth - 36)
+        let spacing: CGFloat = CGFloat(max(0, columns.count - 1)) * 10
+        if column == .model {
+            let fixed = columns.filter { $0 != .model }.reduce(CGFloat(0)) { $0 + baseColumnWidth($1) }
+            return max(110, total - fixed - spacing)
+        }
+        return baseColumnWidth(column)
+    }
+
+    private func baseColumnWidth(_ column: ReportColumn) -> CGFloat {
+        switch column {
+        case .date: return 90
+        case .employee: return mode == .ledger ? 82 : 100
+        case .customer: return mode == .ledger ? 105 : 140
+        case .model: return 110
+        case .quantity: return 52
+        case .color: return 48
+        case .workload: return 82
+        case .receivable: return 94
+        case .wage: return 94
         }
     }
 
@@ -580,19 +797,24 @@ struct QueryView: View {
         }
     }
 
-    private func exportDatabaseBackup() {
-        do {
-            let url = try store.createDatabaseBackup()
-            shareItems = [url]
-            showShareSheet = true
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
     private func ensureSelections() {
         ensureEmployeeSelection()
         ensureCustomerSelection()
+    }
+
+    private func ensureYearSelection() {
+        if !availableYears.contains(selectedYear) {
+            selectedYear = availableYears.first ?? Calendar.current.component(.year, from: Date())
+        }
+    }
+
+    private func applyYearToFilters() {
+        let start = QueryView.yearStart(selectedYear)
+        let end = QueryView.yearEnd(selectedYear)
+        ledgerStart = start
+        ledgerEnd = end
+        employeeReferenceDate = start
+        customerReferenceDate = start
     }
 
     private func ensureEmployeeSelection() {
@@ -645,10 +867,17 @@ struct QueryView: View {
         }
     }
 
-    private static func monthStart(_ date: Date) -> Date {
+    private static func yearStart(_ year: Int) -> Date {
         let calendar = Calendar.current
-        let components = calendar.dateComponents([.year, .month], from: date)
-        return calendar.date(from: components) ?? DateKey.startOfDay(date)
+        let components = DateComponents(year: year, month: 1, day: 1)
+        return calendar.date(from: components) ?? DateKey.startOfDay(Date())
+    }
+
+    private static func yearEnd(_ year: Int) -> Date {
+        let calendar = Calendar.current
+        let start = yearStart(year)
+        let nextYear = calendar.date(byAdding: .year, value: 1, to: start) ?? start.addingTimeInterval(86400 * 366)
+        return calendar.date(byAdding: .second, value: -1, to: nextYear) ?? nextYear
     }
 }
 private enum ReportMode: String, CaseIterable, Identifiable, Equatable {
@@ -701,6 +930,8 @@ private enum ReportColumn: String, CaseIterable, Identifiable, Equatable {
     case quantity
     case color
     case workload
+    case receivable
+    case wage
 
     var id: String { rawValue }
 
@@ -713,7 +944,13 @@ private enum ReportColumn: String, CaseIterable, Identifiable, Equatable {
         case .quantity: return "数量"
         case .color: return "色数"
         case .workload: return "计酬工作量"
+        case .receivable: return "客户应收"
+        case .wage: return "员工工资"
         }
+    }
+
+    var isAmount: Bool {
+        self == .receivable || self == .wage
     }
 
     func value(from record: QueryRecord) -> String {
@@ -725,6 +962,8 @@ private enum ReportColumn: String, CaseIterable, Identifiable, Equatable {
         case .quantity: return String(record.quantity)
         case .color: return String(record.colorCount)
         case .workload: return String(record.workload)
+        case .receivable: return MoneyText.yuan(record.receivableMilliYuan, empty: "—")
+        case .wage: return MoneyText.yuan(record.wageMilliYuan, empty: "—")
         }
     }
 }

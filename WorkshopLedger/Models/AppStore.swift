@@ -40,6 +40,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var employees: [Employee] = []
     @Published private(set) var bills: [Bill] = []
     @Published private(set) var settlementBatches: [SettlementBatch] = []
+    @Published private(set) var customerReceipts: [CustomerReceipt] = []
+    @Published private(set) var employeePayments: [EmployeePayment] = []
     @Published private(set) var drafts: [DraftSummary] = []
     @Published var lastError: String?
 
@@ -114,7 +116,7 @@ final class AppStore: ObservableObject {
     }
 
     var accountDisplayName: String {
-        cloudSession?.displayName ?? "车间账本"
+        cloudSession?.displayName ?? "段誉的段"
     }
     var cloudBadgeText: String {
         if activeSession == nil {
@@ -157,6 +159,8 @@ final class AppStore: ObservableObject {
             bills = try database.loadBills()
             try removeDraftsMatchingBills(in: database)
             settlementBatches = try database.loadSettlementBatches()
+            customerReceipts = try database.loadCustomerReceipts()
+            employeePayments = try database.loadEmployeePayments()
             drafts = try database.loadDraftSummaries()
         } catch {
             lastError = error.localizedDescription
@@ -187,7 +191,8 @@ final class AppStore: ObservableObject {
                         quantity: String($0.quantity),
                         colorCount: $0.colorCount,
                         existingItemID: $0.id,
-                        storedUnitPriceCents: $0.unitPriceCents,
+                        storedUnitPriceMilliYuan: $0.unitPriceMilliYuan,
+                        storedEmployeeWageMilliYuan: $0.employeeWageMilliYuan,
                         settlementBatchID: $0.settlementBatchID
                     )
                 }
@@ -258,37 +263,66 @@ final class AppStore: ObservableObject {
         employees = try database.loadEmployees()
         bills = try database.loadBills()
         settlementBatches = try database.loadSettlementBatches()
+        customerReceipts = try database.loadCustomerReceipts()
+        employeePayments = try database.loadEmployeePayments()
         drafts = try database.loadDraftSummaries()
         markCloudDirty(billDate: date)
         return bill
     }
 
-    func addCustomer(name: String, unitPriceCents: Int64? = nil) throws {
+    func addCustomer(
+        name: String,
+        unitPriceMilliYuan: Int64? = nil,
+        settlementMode: CustomerSettlementMode
+    ) throws {
         try ensureWritable()
         guard let database else { throw DatabaseError.openFailed("数据库未打开") }
-        _ = try database.addCustomer(name: name, unitPriceCents: unitPriceCents)
+        _ = try database.addCustomer(
+            name: name,
+            unitPriceMilliYuan: unitPriceMilliYuan,
+            settlementMode: settlementMode
+        )
         customers = try database.loadCustomers()
         markCloudDirty()
     }
 
-    func updateCustomer(_ customer: Customer, name: String, unitPriceCents: Int64?) throws {
+    func updateCustomer(
+        _ customer: Customer,
+        name: String,
+        unitPriceMilliYuan: Int64?,
+        settlementMode: CustomerSettlementMode
+    ) throws {
         try ensureWritable()
         guard let database else { throw DatabaseError.openFailed("数据库未打开") }
-        let shouldBackfill = customer.unitPriceCents == nil && unitPriceCents != nil
+        let shouldBackfill = customer.unitPriceMilliYuan == nil && unitPriceMilliYuan != nil
         try database.updateCustomer(
             id: customer.id,
             name: name,
-            unitPriceCents: unitPriceCents,
+            unitPriceMilliYuan: unitPriceMilliYuan,
+            settlementMode: settlementMode,
             backfillHistoricalPrices: shouldBackfill
         )
         customers = try database.loadCustomers()
         bills = try database.loadBills()
         settlementBatches = try database.loadSettlementBatches()
+        customerReceipts = try database.loadCustomerReceipts()
         markCloudDirty()
     }
 
-    func unitPriceCents(forCustomer name: String) -> Int64? {
-        customers.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame })?.unitPriceCents
+    func unitPriceMilliYuan(forCustomer name: String) -> Int64? {
+        customers.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame })?.unitPriceMilliYuan
+    }
+
+    func settlementMode(forCustomer name: String) -> CustomerSettlementMode {
+        customers.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame })?.settlementMode ?? .batch
+    }
+
+    var customersUsingBatchSettlement: [Customer] {
+        customers.filter { $0.settlementMode == .batch }
+    }
+
+    var customersUsingAnnualReceipts: [Customer] {
+        customers.filter { $0.settlementMode == .annual }
     }
 
     func settlementBatch(id: Int64?) -> SettlementBatch? {
@@ -296,11 +330,15 @@ final class AppStore: ObservableObject {
         return settlementBatches.first { $0.id == id }
     }
 
+    func wageMilliYuan(forEmployee name: String) -> Int64? {
+        employees.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame })?.wageMilliYuan
+    }
+
     @discardableResult
     func createSettlementBatch(
         itemIDs: [Int64],
         settlementDate: Date,
-        actualAmountCents: Int64,
+        actualAmountMilliYuan: Int64,
         note: String
     ) throws -> SettlementBatch {
         try ensureWritable()
@@ -308,7 +346,7 @@ final class AppStore: ObservableObject {
         let batch = try database.createSettlementBatch(
             itemIDs: itemIDs,
             settlementDate: settlementDate,
-            actualAmountCents: actualAmountCents,
+            actualAmountMilliYuan: actualAmountMilliYuan,
             note: note
         )
         bills = try database.loadBills()
@@ -334,19 +372,27 @@ final class AppStore: ObservableObject {
         markCloudDirty()
     }
 
-    func addEmployee(name: String) throws {
+    func addEmployee(name: String, wageMilliYuan: Int64? = nil) throws {
         try ensureWritable()
         guard let database else { throw DatabaseError.openFailed("数据库未打开") }
-        _ = try database.addEmployee(name: name)
+        _ = try database.addEmployee(name: name, wageMilliYuan: wageMilliYuan)
         employees = try database.loadEmployees()
         markCloudDirty()
     }
 
-    func updateEmployee(_ employee: Employee, name: String) throws {
+    func updateEmployee(_ employee: Employee, name: String, wageMilliYuan: Int64?) throws {
         try ensureWritable()
         guard let database else { throw DatabaseError.openFailed("数据库未打开") }
-        try database.updateEmployee(id: employee.id, name: name)
+        let shouldBackfill = employee.wageMilliYuan == nil && wageMilliYuan != nil
+        try database.updateEmployee(
+            id: employee.id,
+            name: name,
+            wageMilliYuan: wageMilliYuan,
+            backfillHistoricalWages: shouldBackfill
+        )
         employees = try database.loadEmployees()
+        bills = try database.loadBills()
+        employeePayments = try database.loadEmployeePayments()
         markCloudDirty()
     }
 
@@ -356,6 +402,98 @@ final class AppStore: ObservableObject {
         try database.deleteEmployee(id: employee.id)
         employees = try database.loadEmployees()
         markCloudDirty()
+    }
+
+    @discardableResult
+    func createCustomerReceipt(
+        customer: String,
+        receiptDate: Date,
+        amountMilliYuan: Int64,
+        note: String
+    ) throws -> CustomerReceipt {
+        try ensureWritable()
+        guard let database else { throw DatabaseError.openFailed("数据库未打开") }
+        let receipt = try database.createCustomerReceipt(
+            customer: customer,
+            receiptDate: receiptDate,
+            amountMilliYuan: amountMilliYuan,
+            note: note
+        )
+        customerReceipts = try database.loadCustomerReceipts()
+        markCloudDirty()
+        return receipt
+    }
+
+    func revokeCustomerReceipt(_ receipt: CustomerReceipt) throws {
+        try ensureWritable()
+        guard let database else { throw DatabaseError.openFailed("数据库未打开") }
+        try database.revokeCustomerReceipt(id: receipt.id)
+        customerReceipts = try database.loadCustomerReceipts()
+        markCloudDirty()
+    }
+
+    @discardableResult
+    func createEmployeePayment(
+        employee: String,
+        paymentDate: Date,
+        amountMilliYuan: Int64,
+        note: String
+    ) throws -> EmployeePayment {
+        try ensureWritable()
+        guard let database else { throw DatabaseError.openFailed("数据库未打开") }
+        let payment = try database.createEmployeePayment(
+            employee: employee,
+            paymentDate: paymentDate,
+            amountMilliYuan: amountMilliYuan,
+            note: note
+        )
+        employeePayments = try database.loadEmployeePayments()
+        markCloudDirty()
+        return payment
+    }
+
+    func revokeEmployeePayment(_ payment: EmployeePayment) throws {
+        try ensureWritable()
+        guard let database else { throw DatabaseError.openFailed("数据库未打开") }
+        try database.revokeEmployeePayment(id: payment.id)
+        employeePayments = try database.loadEmployeePayments()
+        markCloudDirty()
+    }
+
+    func customerOutstandingMilliYuan(customer: String, through date: Date = Date()) -> Int64 {
+        let day = DateKey.string(from: date)
+        let receivable = bills.reduce(Int64(0)) { partial, bill in
+            guard DateKey.string(from: bill.date) <= day else { return partial }
+            return partial + bill.items.reduce(Int64(0)) { total, item in
+                guard item.customer.caseInsensitiveCompare(customer) == .orderedSame else { return total }
+                return total + (item.receivableMilliYuan ?? 0)
+            }
+        }
+        let paid = customerReceipts.reduce(Int64(0)) { partial, receipt in
+            guard !receipt.isRevoked,
+                  receipt.customer.caseInsensitiveCompare(customer) == .orderedSame,
+                  DateKey.string(from: receipt.receiptDate) <= day else { return partial }
+            return partial + receipt.amountMilliYuan
+        }
+        return max(0, receivable - paid)
+    }
+
+    func employeeBalanceMilliYuan(employee: String, through date: Date = Date()) -> Int64 {
+        let day = DateKey.string(from: date)
+        let payable = bills.reduce(Int64(0)) { partial, bill in
+            guard DateKey.string(from: bill.date) <= day else { return partial }
+            return partial + bill.items.reduce(Int64(0)) { total, item in
+                guard item.employee.caseInsensitiveCompare(employee) == .orderedSame else { return total }
+                return total + (item.wageMilliYuan ?? 0)
+            }
+        }
+        let paid = employeePayments.reduce(Int64(0)) { partial, payment in
+            guard !payment.isRevoked,
+                  payment.employee.caseInsensitiveCompare(employee) == .orderedSame,
+                  DateKey.string(from: payment.paymentDate) <= day else { return partial }
+            return partial + payment.amountMilliYuan
+        }
+        return payable - paid
     }
 
     func queryRecords(
@@ -388,7 +526,12 @@ final class AppStore: ObservableObject {
                         model: item.model,
                         quantity: item.quantity,
                         colorCount: item.colorCount,
-                        workload: item.workload
+                        workload: item.workload,
+                        unitPriceMilliYuan: item.unitPriceMilliYuan,
+                        employeeWageMilliYuan: item.employeeWageMilliYuan,
+                        receivableMilliYuan: item.receivableMilliYuan,
+                        wageMilliYuan: item.wageMilliYuan,
+                        settlementBatchID: item.settlementBatchID
                     )
                 }
             }
@@ -396,6 +539,131 @@ final class AppStore: ObservableObject {
                 if $0.date == $1.date { return $0.id > $1.id }
                 return $0.date > $1.date
             }
+    }
+
+    func factoryAnnualSettlement(year: Int) -> FactoryAnnualSettlement {
+        let prefix = "\(year)-"
+        let receivable = bills.reduce(Int64(0)) { partial, bill in
+            guard DateKey.string(from: bill.date).hasPrefix(prefix) else { return partial }
+            return partial + bill.items.compactMap(\.receivableMilliYuan).reduce(0, +)
+        }
+        let payable = bills.reduce(Int64(0)) { partial, bill in
+            guard DateKey.string(from: bill.date).hasPrefix(prefix) else { return partial }
+            return partial + bill.items.compactMap(\.wageMilliYuan).reduce(0, +)
+        }
+        let batchCollected = settlementBatches.reduce(Int64(0)) { partial, batch in
+            guard !batch.isRevoked, DateKey.string(from: batch.settlementDate).hasPrefix(prefix) else { return partial }
+            return partial + batch.actualAmountMilliYuan
+        }
+        let receiptCollected = customerReceipts.reduce(Int64(0)) { partial, receipt in
+            guard !receipt.isRevoked, DateKey.string(from: receipt.receiptDate).hasPrefix(prefix) else { return partial }
+            return partial + receipt.amountMilliYuan
+        }
+        let wagesPaid = employeePayments.reduce(Int64(0)) { partial, payment in
+            guard !payment.isRevoked, DateKey.string(from: payment.paymentDate).hasPrefix(prefix) else { return partial }
+            return partial + payment.amountMilliYuan
+        }
+        return FactoryAnnualSettlement(
+            year: year,
+            receivableMilliYuan: receivable,
+            receivableCollectedMilliYuan: batchCollected + receiptCollected,
+            payableMilliYuan: payable,
+            wagesPaidMilliYuan: wagesPaid
+        )
+    }
+
+    func customerAnnualSettlement(customer: String, year: Int) -> CustomerAnnualSettlement {
+        let prefix = "\(year)-"
+        let end = "\(year)-12-31"
+        let mode = settlementMode(forCustomer: customer)
+        let annualReceivable = bills.reduce(Int64(0)) { partial, bill in
+            guard DateKey.string(from: bill.date).hasPrefix(prefix) else { return partial }
+            return partial + bill.items.reduce(Int64(0)) { total, item in
+                guard item.customer.caseInsensitiveCompare(customer) == .orderedSame else { return total }
+                return total + (item.receivableMilliYuan ?? 0)
+            }
+        }
+        let annualBatchPayment = settlementBatches.reduce(Int64(0)) { partial, batch in
+            guard !batch.isRevoked,
+                  batch.customer.caseInsensitiveCompare(customer) == .orderedSame,
+                  DateKey.string(from: batch.settlementDate).hasPrefix(prefix) else { return partial }
+            return partial + batch.actualAmountMilliYuan
+        }
+        let annualReceiptPayment = customerReceipts.reduce(Int64(0)) { partial, receipt in
+            guard !receipt.isRevoked,
+                  receipt.customer.caseInsensitiveCompare(customer) == .orderedSame,
+                  DateKey.string(from: receipt.receiptDate).hasPrefix(prefix) else { return partial }
+            return partial + receipt.amountMilliYuan
+        }
+        let cumulativeReceivable = bills.reduce(Int64(0)) { partial, bill in
+            guard DateKey.string(from: bill.date) <= end else { return partial }
+            return partial + bill.items.reduce(Int64(0)) { total, item in
+                guard item.customer.caseInsensitiveCompare(customer) == .orderedSame else { return total }
+                return total + (item.receivableMilliYuan ?? 0)
+            }
+        }
+        let cumulativeBatchPaid = settlementBatches.reduce(Int64(0)) { partial, batch in
+            guard !batch.isRevoked,
+                  batch.customer.caseInsensitiveCompare(customer) == .orderedSame,
+                  DateKey.string(from: batch.settlementDate) <= end else { return partial }
+            return partial + batch.actualAmountMilliYuan
+        }
+        let cumulativeReceiptPaid = customerReceipts.reduce(Int64(0)) { partial, receipt in
+            guard !receipt.isRevoked,
+                  receipt.customer.caseInsensitiveCompare(customer) == .orderedSame,
+                  DateKey.string(from: receipt.receiptDate) <= end else { return partial }
+            return partial + receipt.amountMilliYuan
+        }
+        let payment = mode == .batch ? annualBatchPayment : annualReceiptPayment
+        let cumulativePayment = mode == .batch ? cumulativeBatchPaid : cumulativeReceiptPaid
+        return CustomerAnnualSettlement(
+            year: year,
+            customer: customer,
+            mode: mode,
+            annualReceivableMilliYuan: annualReceivable,
+            annualPaymentMilliYuan: payment,
+            annualBatchPaymentMilliYuan: annualBatchPayment,
+            annualReceiptPaymentMilliYuan: annualReceiptPayment,
+            outstandingAtYearEndMilliYuan: max(0, cumulativeReceivable - cumulativePayment)
+        )
+    }
+
+    func employeeAnnualSettlement(employee: String, year: Int) -> EmployeeAnnualSettlement {
+        let prefix = "\(year)-"
+        let end = "\(year)-12-31"
+        let annualPayable = bills.reduce(Int64(0)) { partial, bill in
+            guard DateKey.string(from: bill.date).hasPrefix(prefix) else { return partial }
+            return partial + bill.items.reduce(Int64(0)) { total, item in
+                guard item.employee.caseInsensitiveCompare(employee) == .orderedSame else { return total }
+                return total + (item.wageMilliYuan ?? 0)
+            }
+        }
+        let annualPaid = employeePayments.reduce(Int64(0)) { partial, payment in
+            guard !payment.isRevoked,
+                  payment.employee.caseInsensitiveCompare(employee) == .orderedSame,
+                  DateKey.string(from: payment.paymentDate).hasPrefix(prefix) else { return partial }
+            return partial + payment.amountMilliYuan
+        }
+        let cumulativePayable = bills.reduce(Int64(0)) { partial, bill in
+            guard DateKey.string(from: bill.date) <= end else { return partial }
+            return partial + bill.items.reduce(Int64(0)) { total, item in
+                guard item.employee.caseInsensitiveCompare(employee) == .orderedSame else { return total }
+                return total + (item.wageMilliYuan ?? 0)
+            }
+        }
+        let cumulativePaid = employeePayments.reduce(Int64(0)) { partial, payment in
+            guard !payment.isRevoked,
+                  payment.employee.caseInsensitiveCompare(employee) == .orderedSame,
+                  DateKey.string(from: payment.paymentDate) <= end else { return partial }
+            return partial + payment.amountMilliYuan
+        }
+        return EmployeeAnnualSettlement(
+            year: year,
+            employee: employee,
+            annualPayableMilliYuan: annualPayable,
+            annualPaidMilliYuan: annualPaid,
+            balanceAtYearEndMilliYuan: cumulativePayable - cumulativePaid
+        )
     }
 
     var allCustomerNames: [String] {
@@ -1077,7 +1345,10 @@ extension AppStore {
         let remoteCustomers = customers.map {
             RemoteDirectoryRecord(
                 name: $0.name,
-                unitPriceCents: $0.unitPriceCents,
+                unitPriceMilliYuan: $0.unitPriceMilliYuan,
+                wageMilliYuan: nil,
+                settlementMode: $0.settlementMode.rawValue,
+                unitPriceCents: nil,
                 createdAt: CloudDate.isoString($0.createdAt),
                 updatedAt: CloudDate.isoString($0.updatedAt)
             )
@@ -1085,6 +1356,9 @@ extension AppStore {
         let remoteEmployees = employees.map {
             RemoteDirectoryRecord(
                 name: $0.name,
+                unitPriceMilliYuan: nil,
+                wageMilliYuan: $0.wageMilliYuan,
+                settlementMode: nil,
                 unitPriceCents: nil,
                 createdAt: CloudDate.isoString($0.createdAt),
                 updatedAt: CloudDate.isoString($0.updatedAt)
@@ -1102,7 +1376,9 @@ extension AppStore {
                         model: $0.model,
                         quantity: $0.quantity,
                         colorCount: $0.colorCount,
-                        unitPriceCents: $0.unitPriceCents,
+                        unitPriceMilliYuan: $0.unitPriceMilliYuan,
+                        employeeWageMilliYuan: $0.employeeWageMilliYuan,
+                        unitPriceCents: nil,
                         settlementBatchNo: $0.settlementBatchID.flatMap { batchNumbers[$0] }
                     )
                 }
@@ -1113,19 +1389,45 @@ extension AppStore {
                 batchNo: $0.batchNo,
                 customer: $0.customer,
                 settlementDate: DateKey.string(from: $0.settlementDate),
-                receivableCents: $0.receivableCents,
-                actualAmountCents: $0.actualAmountCents,
+                receivableMilliYuan: $0.receivableMilliYuan,
+                actualAmountMilliYuan: $0.actualAmountMilliYuan,
+                receivableCents: nil,
+                actualAmountCents: nil,
+                note: $0.note,
+                createdAt: CloudDate.isoString($0.createdAt),
+                revokedAt: $0.revokedAt.map(CloudDate.isoString)
+            )
+        }
+        let remoteReceipts = customerReceipts.map {
+            RemoteCustomerReceiptRecord(
+                receiptNo: $0.receiptNo,
+                customer: $0.customer,
+                amountMilliYuan: $0.amountMilliYuan,
+                receiptDate: DateKey.string(from: $0.receiptDate),
+                note: $0.note,
+                createdAt: CloudDate.isoString($0.createdAt),
+                revokedAt: $0.revokedAt.map(CloudDate.isoString)
+            )
+        }
+        let remotePayments = employeePayments.map {
+            RemoteEmployeePaymentRecord(
+                paymentNo: $0.paymentNo,
+                employee: $0.employee,
+                amountMilliYuan: $0.amountMilliYuan,
+                paymentDate: DateKey.string(from: $0.paymentDate),
                 note: $0.note,
                 createdAt: CloudDate.isoString($0.createdAt),
                 revokedAt: $0.revokedAt.map(CloudDate.isoString)
             )
         }
         return RemoteWorkshopData(
-            schemaVersion: 2,
+            schemaVersion: 3,
             customers: remoteCustomers,
             employees: remoteEmployees,
             bills: remoteBills,
-            settlementBatches: remoteBatches
+            settlementBatches: remoteBatches,
+            customerReceipts: remoteReceipts,
+            employeePayments: remotePayments
         )
     }
 
@@ -1136,6 +1438,8 @@ extension AppStore {
         employees = try database.loadEmployees()
         bills = try database.loadBills()
         settlementBatches = try database.loadSettlementBatches()
+        customerReceipts = try database.loadCustomerReceipts()
+        employeePayments = try database.loadEmployeePayments()
         drafts = try database.loadDraftSummaries()
         return count
     }

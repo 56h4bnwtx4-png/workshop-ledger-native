@@ -770,11 +770,20 @@ struct EntryView: View {
         }
         if let missingPrice = candidate.first(where: {
             !$0.isLocked
-                && $0.storedUnitPriceCents == nil
-                && store.unitPriceCents(forCustomer: $0.customer) == nil
+                && $0.storedUnitPriceMilliYuan == nil
+                && store.unitPriceMilliYuan(forCustomer: $0.customer) == nil
         }) {
             let index = candidate.firstIndex(of: missingPrice).map { $0 + 1 } ?? 1
             activeAlert = .error("第 \(index) 条记录的客户“\(missingPrice.customer)”尚未设置加工单价，请先到客户管理页设置。")
+            return
+        }
+        if let missingWage = candidate.first(where: {
+            !$0.isLocked
+                && $0.storedEmployeeWageMilliYuan == nil
+                && store.wageMilliYuan(forEmployee: $0.employee) == nil
+        }) {
+            let index = candidate.firstIndex(of: missingWage).map { $0 + 1 } ?? 1
+            activeAlert = .error("第 \(index) 条记录的员工“\(missingWage.employee)”尚未设置工资单价，请先到员工管理页设置。")
             return
         }
 

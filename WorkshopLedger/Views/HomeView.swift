@@ -23,7 +23,7 @@ struct HomeView: View {
     var body: some View {
         WorkshopShell {
             WorkshopTopBar(
-                brandTitle: "车间计件流水账",
+                brandTitle: "段誉的段",
                 brandSubtitle: "Workshop Ledger",
                 brandIcon: "list.bullet.rectangle",
                 leadingIcon: "gearshape",

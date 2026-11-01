@@ -4,662 +4,432 @@ struct DirectoryView: View {
     @EnvironmentObject private var store: AppStore
     let onClose: () -> Void
 
-    @State private var activeKind: DirectoryKind = .customer
-    @State private var activeSheet: DirectorySheetItem?
-    @State private var deleteTarget: DirectoryDeleteTarget?
-
-    private var members: [DirectoryMember] {
-        switch activeKind {
-        case .customer:
-            return store.customers.map {
-                DirectoryMember(
-                    id: $0.id,
-                    name: $0.name,
-                    unitPriceCents: $0.unitPriceCents,
-                    createdAt: $0.createdAt,
-                    updatedAt: $0.updatedAt
-                )
-            }
-        case .employee:
-            return store.employees.map {
-                DirectoryMember(
-                    id: $0.id,
-                    name: $0.name,
-                    unitPriceCents: nil,
-                    createdAt: $0.createdAt,
-                    updatedAt: $0.updatedAt
-                )
-            }
-        }
-    }
+    @State private var destination: SettingsDestination?
 
     var body: some View {
-        ZStack {
-            WorkshopShell {
-                WorkshopTopBar(
-                    brandTitle: "设置管理",
-                    brandSubtitle: "Account Settings",
-                    brandIcon: "gearshape",
-                    backAction: onClose
-                ) {
-                    LocalModeBadge(text: store.cloudBadgeText)
-                }
-
-                ScrollView {
-                    VStack(spacing: 0) {
-                        PageHeading(
-                            eyebrow: "基础档案",
-                            title: "设置管理",
-                            note: "客户与员工档案保存在当前账号，并同步到该账号的云端备份；录入页会读取最新档案。"
-                        ) {
-                            PageScopeBadge(label: "本期仅配置", value: "客户 · 员工")
-                        }
-
-                        settingsCard
-                        settlementCard
-                            .padding(.top, 18)
-                        cloudCard
-                            .padding(.top, 18)
-                    }
-                    .padding(.horizontal, 38)
-                    .padding(.top, 30)
-                    .padding(.bottom, 34)
-                }
+        WorkshopShell {
+            WorkshopTopBar(
+                brandTitle: "设置管理",
+                brandSubtitle: "Account Settings",
+                brandIcon: "gearshape",
+                backAction: onClose
+            ) {
+                LocalModeBadge(text: store.cloudBadgeText)
             }
 
-            if let target = deleteTarget {
-                deleteConfirmation(target)
+            ScrollView {
+                VStack(spacing: 18) {
+                    PageHeading(
+                        eyebrow: "基础档案与结算",
+                        title: "设置管理",
+                        note: "客户、员工、回款、清账、工资和云端备份均已拆分为独立页面。金额统一保留三位小数。"
+                    ) {
+                        PageScopeBadge(label: "当前软件", value: "段誉的段")
+                    }
+
+                    settingsRow(
+                        title: "客户管理",
+                        note: "维护客户档案、结算方式与当前加工单价；同一客户所有型号共用单价。",
+                        icon: "building.2",
+                        color: AppTheme.accentDark,
+                        badge: "\(store.customers.count) 位客户"
+                    ) { destination = .customers }
+
+                    settingsRow(
+                        title: "员工管理",
+                        note: "维护员工档案与统一工资单价；未设置工资单价的员工不能提交计件流水。",
+                        icon: "person.2",
+                        color: AppTheme.success,
+                        badge: "\(store.employees.count) 位员工"
+                    ) { destination = .employees }
+
+                    settingsRow(
+                        title: "客户回款",
+                        note: "仅用于“按年回款”客户，登记不绑定具体流水的整笔到账记录。",
+                        icon: "banknote",
+                        color: Color(red: 0.18, green: 0.44, blue: 0.68),
+                        badge: "\(store.customersUsingAnnualReceipts.count) 位按年客户"
+                    ) { destination = .receipts }
+
+                    settingsRow(
+                        title: "清账管理",
+                        note: "仅用于“按批结清”客户，按所选流水整批结清并锁定；只能整批撤销。",
+                        icon: "checkmark.seal",
+                        color: AppTheme.accentDark,
+                        badge: "\(store.customersUsingBatchSettlement.count) 位按批客户"
+                    ) { destination = .settlement }
+
+                    settingsRow(
+                        title: "工资发放",
+                        note: "按员工登记实发工资，支持预支或多发；只能整笔撤销且保留撤销记录。",
+                        icon: "person.crop.circle.badge.checkmark",
+                        color: Color(red: 0.38, green: 0.34, blue: 0.64),
+                        badge: "\(store.employeePayments.count) 笔记录"
+                    ) { destination = .payments }
+
+                    settingsRow(
+                        title: "云端备份与恢复",
+                        note: store.cloudStatusText,
+                        icon: store.isCloudLoggedIn ? "icloud.fill" : "icloud.slash",
+                        color: store.isCloudLoggedIn ? AppTheme.success : AppTheme.textFaint,
+                        badge: "账号与快照"
+                    ) { destination = .cloud }
+                }
+                .padding(.horizontal, 38)
+                .padding(.top, 30)
+                .padding(.bottom, 34)
             }
         }
-        .sheet(item: $activeSheet) { item in
+        .fullScreenCover(item: $destination) { item in
             switch item {
-            case .editor(let kind, let member):
-                DirectoryEditorSheet(
-                    kind: kind,
-                    member: member,
-                    onSave: { name, unitPriceCents in
-                        try save(kind: kind, existing: member, name: name, unitPriceCents: unitPriceCents)
-                    }
-                )
-            case .detail(let kind, let member):
-                DirectoryDetailSheet(kind: kind, member: member)
+            case .customers:
+                CustomerDirectoryView { destination = nil }
+            case .employees:
+                EmployeeDirectoryView { destination = nil }
+            case .receipts:
+                CustomerReceiptManagementView { destination = nil }
             case .settlement:
-                SettlementView {
-                    activeSheet = nil
-                }
+                SettlementView { destination = nil }
+            case .payments:
+                EmployeePaymentManagementView { destination = nil }
             case .cloud:
-                CloudBackupView {
-                    activeSheet = nil
-                }
+                CloudBackupView { destination = nil }
             }
         }
     }
 
-    private func deleteConfirmation(_ target: DirectoryDeleteTarget) -> some View {
-        ZStack {
-            Color.black.opacity(0.28)
-                .ignoresSafeArea()
-                .onTapGesture { deleteTarget = nil }
+    private func settingsRow(
+        title: String,
+        note: String,
+        icon: String,
+        color: Color,
+        badge: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Panel {
+                HStack(spacing: 18) {
+                    Image(systemName: icon)
+                        .font(.system(size: 21, weight: .semibold))
+                        .foregroundColor(color)
+                        .frame(width: 52, height: 52)
+                        .background(color.opacity(0.11))
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 18) {
-                HStack(spacing: 13) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(AppTheme.danger)
-                        .frame(width: 44, height: 44)
-                        .background(AppTheme.dangerSoft)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("确认删除\(target.kind.singular)？")
-                            .font(.system(size: 19, weight: .bold))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(title)
+                            .font(.system(size: 18, weight: .bold))
                             .foregroundColor(AppTheme.text)
-                        Text("档案删除后不能撤销。")
+                        Text(note)
                             .font(.system(size: 12))
                             .foregroundColor(AppTheme.textMuted)
+                            .lineLimit(2)
                     }
-                }
 
-                Text("删除后，该档案将不再出现在录入页下拉选项中。已有流水中的名称不会被改动。")
-                    .font(.system(size: 14))
-                    .foregroundColor(AppTheme.textMuted)
-                    .lineSpacing(3)
+                    Spacer(minLength: 16)
 
-                HStack(spacing: 12) {
-                    Spacer()
-                    Button("取消") { deleteTarget = nil }
-                        .buttonStyle(SecondaryButtonStyle())
-                    Button {
-                        delete(target)
-                        deleteTarget = nil
-                    } label: {
-                        Text("确认删除")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 18)
-                            .frame(height: 40)
-                            .background(AppTheme.danger)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    }
-                    .buttonStyle(PlainButtonStyle())
+                    Text(badge)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(color)
+                        .padding(.horizontal, 11)
+                        .frame(height: 28)
+                        .background(color.opacity(0.09))
+                        .clipShape(Capsule())
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(AppTheme.textFaint)
                 }
+                .padding(20)
+                .contentShape(Rectangle())
             }
-            .padding(24)
-            .frame(maxWidth: 470)
-            .background(Color.white)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(AppTheme.line, lineWidth: 1)
-            )
-            .shadow(color: AppTheme.navy.opacity(0.18), radius: 24, x: 0, y: 12)
-            .padding(30)
-        }
-        .zIndex(20)
-    }
-
-    private var settingsCard: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                settingsTab(kind: .customer, count: store.customers.count, icon: "person.2")
-                settingsTab(kind: .employee, count: store.employees.count, icon: "person.crop.circle")
-                Spacer()
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 62)
-            .background(AppTheme.surfaceSoft)
-            .overlay(Rectangle().fill(AppTheme.line).frame(height: 1), alignment: .bottom)
-
-            HStack(spacing: 20) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(activeKind.title)
-                        .font(.system(size: 19, weight: .bold))
-                        .foregroundColor(AppTheme.text)
-                    Text(activeKind.description)
-                        .font(.system(size: 12))
-                        .foregroundColor(AppTheme.textMuted)
-                }
-                Spacer()
-                Button {
-                    activeSheet = .editor(activeKind, nil)
-                } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 12, weight: .bold))
-                        Text("新增\(activeKind.singular)")
-                    }
-                }
-                .buttonStyle(SecondaryButtonStyle())
-            }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 18)
-            .overlay(Rectangle().fill(AppTheme.line).frame(height: 1), alignment: .bottom)
-
-            directoryTable
-
-            HStack {
-                Text("\(activeKind.singular)档案共 \(members.count) 条")
-                Spacer()
-                Text("录入页打开时会读取最新档案")
-            }
-            .font(.system(size: 12))
-            .foregroundColor(AppTheme.textFaint)
-            .padding(.horizontal, 22)
-            .frame(height: 42)
-            .background(AppTheme.surfaceSoft)
-            .overlay(Rectangle().fill(AppTheme.line).frame(height: 1), alignment: .top)
-        }
-        .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(AppTheme.line, lineWidth: 1)
-        )
-    }
-
-    private var settlementCard: some View {
-        Panel {
-            HStack(spacing: 16) {
-                Image(systemName: "checkmark.seal")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundColor(AppTheme.accentDark)
-                    .frame(width: 48, height: 48)
-                    .background(AppTheme.accentSoft)
-                    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("清账管理")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(AppTheme.text)
-                    Text("按客户查看已结清与未结清流水，支持整批结清和撤销整个结清批次。")
-                        .font(.system(size: 12))
-                        .foregroundColor(AppTheme.textMuted)
-                }
-
-                Spacer()
-
-                Button {
-                    activeSheet = .settlement
-                } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: "checkmark.circle")
-                        Text("打开清账管理")
-                    }
-                }
-                .buttonStyle(SecondaryButtonStyle())
-            }
-            .padding(20)
-        }
-    }
-
-    private var cloudCard: some View {
-        Panel {
-            HStack(spacing: 16) {
-                Image(systemName: store.isCloudLoggedIn ? "icloud.fill" : "icloud.slash")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundColor(store.isCloudLoggedIn ? AppTheme.success : AppTheme.textFaint)
-                    .frame(width: 48, height: 48)
-                    .background(store.isCloudLoggedIn ? Color(red: 0.93, green: 0.97, blue: 0.95) : AppTheme.surfaceSoft)
-                    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("云端备份与恢复")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(AppTheme.text)
-                    Text(store.cloudStatusText)
-                        .font(.system(size: 12))
-                        .foregroundColor(AppTheme.textMuted)
-                    if let snapshot = store.lastCloudSnapshotName {
-                        Text("最近快照：\(snapshot)")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(AppTheme.textFaint)
-                            .lineLimit(1)
-                    }
-                }
-
-                Spacer()
-
-                Button {
-                    activeSheet = .cloud
-                } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: "icloud.and.arrow.up")
-                        Text("账号、设备与云端备份")
-                    }
-                }
-                .buttonStyle(SecondaryButtonStyle())
-            }
-            .padding(20)
-        }
-    }
-
-    private func settingsTab(kind: DirectoryKind, count: Int, icon: String) -> some View {
-        Button {
-            activeKind = kind
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: icon)
-                    .font(.system(size: 15, weight: .semibold))
-                Text(kind.tabTitle)
-                    .font(.system(size: 14, weight: .semibold))
-                Text("\(count)")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(activeKind == kind ? .white : AppTheme.textMuted)
-                    .padding(.horizontal, 7)
-                    .frame(height: 21)
-                    .background(activeKind == kind ? AppTheme.accent : Color.white)
-                    .clipShape(Capsule())
-            }
-            .foregroundColor(activeKind == kind ? AppTheme.accentDark : AppTheme.textMuted)
-            .padding(.horizontal, 16)
-            .frame(height: 44)
-            .background(activeKind == kind ? Color.white : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .stroke(activeKind == kind ? AppTheme.line : Color.clear, lineWidth: 1)
-            )
         }
         .buttonStyle(PlainButtonStyle())
-        .padding(.trailing, 7)
+    }
+}
+
+private enum SettingsDestination: String, Identifiable {
+    case customers
+    case employees
+    case receipts
+    case settlement
+    case payments
+    case cloud
+
+    var id: String { rawValue }
+}
+
+struct CustomerDirectoryView: View {
+    @EnvironmentObject private var store: AppStore
+    let onClose: () -> Void
+
+    @State private var editorTarget: CustomerEditorTarget?
+    @State private var detailTarget: Customer?
+    @State private var deleteTarget: Customer?
+
+    var body: some View {
+        WorkshopShell {
+            WorkshopTopBar(
+                brandTitle: "客户管理",
+                brandSubtitle: "Customers",
+                brandIcon: "building.2",
+                backAction: onClose
+            ) {
+                LocalModeBadge(text: "加工单价三位小数")
+            }
+
+            ScrollView {
+                VStack(spacing: 18) {
+                    PageHeading(
+                        eyebrow: "客户档案",
+                        title: "客户管理",
+                        note: "同一客户的所有型号共用当前加工单价。首次设置单价时，会覆盖该客户此前尚未保存单价的历史流水。"
+                    ) {
+                        Button {
+                            editorTarget = CustomerEditorTarget(customer: nil)
+                        } label: {
+                            HStack(spacing: 7) {
+                                Image(systemName: "plus")
+                                Text("新增客户")
+                            }
+                        }
+                        .buttonStyle(PrimaryButtonStyle())
+                    }
+
+                    customerTable
+                }
+                .padding(.horizontal, 32)
+                .padding(.top, 28)
+                .padding(.bottom, 34)
+            }
+        }
+        .sheet(item: $editorTarget) { target in
+            CustomerEditorSheet(
+                customer: target.customer,
+                settlementLocked: target.customer.map(hasActiveSettlement) ?? false
+            ) { name, price, mode in
+                try save(customer: target.customer, name: name, price: price, mode: mode)
+            }
+        }
+        .sheet(item: $detailTarget) { customer in
+            CustomerDetailSheet(customer: customer)
+        }
+        .alert(item: $deleteTarget) { customer in
+            Alert(
+                title: Text("确认删除客户？"),
+                message: Text("将删除“\(customer.name)”档案。已有流水中的客户名称不会改变。"),
+                primaryButton: .destructive(Text("删除客户")) { delete(customer) },
+                secondaryButton: .cancel(Text("取消"))
+            )
+        }
     }
 
-    private var directoryTable: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 14) {
-                Text("档案名称")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Text("创建时间")
-                    .frame(width: 150, alignment: .leading)
-                Text("最近修改")
-                    .frame(width: 150, alignment: .leading)
-                Text("操作")
-                    .frame(width: 112, alignment: .trailing)
-            }
-            .font(.system(size: 12, weight: .bold))
-            .foregroundColor(AppTheme.textMuted)
-            .padding(.horizontal, 22)
-            .frame(height: 44)
-            .background(Color(red: 0.98, green: 0.984, blue: 0.988))
-            .overlay(Rectangle().fill(AppTheme.line).frame(height: 1), alignment: .bottom)
-
-            if members.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "list.bullet.rectangle")
-                        .font(.system(size: 27, weight: .light))
-                        .foregroundColor(AppTheme.textFaint)
-                        .frame(width: 58, height: 58)
-                        .background(AppTheme.surfaceSoft)
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .stroke(AppTheme.line, lineWidth: 1)
-                        )
-                        .padding(.bottom, 6)
-                    Text("暂无\(activeKind.singular)档案")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundColor(AppTheme.text)
-                    Text("点击右上角“新增\(activeKind.singular)”创建第一条档案。")
-                        .font(.system(size: 13))
-                        .foregroundColor(AppTheme.textMuted)
+    private var customerTable: some View {
+        Panel {
+            VStack(spacing: 0) {
+                HStack(spacing: 14) {
+                    Text("客户名称").frame(maxWidth: .infinity, alignment: .leading)
+                    Text("结算方式").frame(width: 120, alignment: .leading)
+                    Text("当前加工单价").frame(width: 150, alignment: .trailing)
+                    Text("最近修改").frame(width: 150, alignment: .leading)
+                    Text("操作").frame(width: 132, alignment: .trailing)
                 }
-                .frame(maxWidth: .infinity)
-                .frame(minHeight: 260)
-                .padding(24)
-            } else {
-                ForEach(Array(members.enumerated()), id: \.element.id) { index, member in
-                    memberRow(member, alternate: index.isMultiple(of: 2) == false)
-                    if index < members.count - 1 {
-                        Rectangle().fill(AppTheme.line).frame(height: 1).padding(.horizontal, 22)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(AppTheme.textMuted)
+                .padding(.horizontal, 20)
+                .frame(height: 44)
+                .background(AppTheme.surfaceSoft)
+                .overlay(Rectangle().fill(AppTheme.line).frame(height: 1), alignment: .bottom)
+
+                if store.customers.isEmpty {
+                    EmptyStateView(title: "暂无客户档案", message: "点击右上角“新增客户”建立第一位客户。")
+                        .frame(minHeight: 280)
+                } else {
+                    ForEach(Array(store.customers.enumerated()), id: \.element.id) { index, customer in
+                        customerRow(customer, alternate: !index.isMultiple(of: 2))
+                        if index < store.customers.count - 1 {
+                            Rectangle().fill(AppTheme.line).frame(height: 1).padding(.horizontal, 20)
+                        }
                     }
                 }
             }
         }
     }
 
-    private func memberRow(_ member: DirectoryMember, alternate: Bool) -> some View {
+    private func customerRow(_ customer: Customer, alternate: Bool) -> some View {
         HStack(spacing: 14) {
             HStack(spacing: 10) {
-                Image(systemName: activeKind == .customer ? "building.2" : "person.fill")
-                    .font(.system(size: 14, weight: .semibold))
+                Image(systemName: "building.2")
                     .foregroundColor(AppTheme.accentDark)
                     .frame(width: 34, height: 34)
                     .background(AppTheme.accentSoft)
                     .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                Text(member.name)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(AppTheme.text)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(customer.name)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(AppTheme.text)
+                    Text(hasActiveSettlement(customer) ? "已有结款记录 · 结算方式已锁定" : "结算方式可调整")
+                        .font(.system(size: 10))
+                        .foregroundColor(hasActiveSettlement(customer) ? AppTheme.accentDark : AppTheme.textFaint)
+                }
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(formatTime(member.createdAt))
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundColor(AppTheme.textMuted)
-                .frame(width: 150, alignment: .leading)
+            StatusTag(
+                text: customer.settlementMode.title,
+                foreground: customer.settlementMode == .batch ? AppTheme.accentDark : Color(red: 0.18, green: 0.44, blue: 0.68),
+                background: customer.settlementMode == .batch ? AppTheme.accentSoft : Color(red: 0.93, green: 0.96, blue: 1)
+            )
+            .frame(width: 120, alignment: .leading)
 
-            Text(formatTime(member.updatedAt))
-                .font(.system(size: 12, design: .monospaced))
+            Text(MoneyText.yuan(customer.unitPriceMilliYuan))
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                .foregroundColor(customer.unitPriceMilliYuan == nil ? AppTheme.danger : AppTheme.text)
+                .frame(width: 150, alignment: .trailing)
+
+            Text(formatTime(customer.updatedAt))
+                .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(AppTheme.textMuted)
                 .frame(width: 150, alignment: .leading)
 
             HStack(spacing: 7) {
-                rowAction(icon: "eye", color: AppTheme.textMuted) {
-                    activeSheet = .detail(activeKind, member)
+                directoryActionButton(icon: "eye", color: AppTheme.textMuted) {
+                    detailTarget = customer
                 }
-                rowAction(icon: "pencil", color: AppTheme.accentDark) {
-                    activeSheet = .editor(activeKind, member)
+                directoryActionButton(icon: "pencil", color: AppTheme.accentDark) {
+                    editorTarget = CustomerEditorTarget(customer: customer)
                 }
-                rowAction(icon: "trash", color: AppTheme.danger) {
-                    deleteTarget = DirectoryDeleteTarget(kind: activeKind, member: member)
+                directoryActionButton(icon: "trash", color: AppTheme.danger) {
+                    deleteTarget = customer
                 }
             }
-            .frame(width: 112, alignment: .trailing)
+            .frame(width: 132, alignment: .trailing)
         }
-        .padding(.horizontal, 22)
-        .frame(minHeight: 58)
+        .padding(.horizontal, 20)
+        .frame(minHeight: 62)
         .background(alternate ? AppTheme.surfaceSoft.opacity(0.7) : Color.white)
     }
 
-    private func rowAction(icon: String, color: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(color)
-                .frame(width: 30, height: 30)
-                .background(Color.white)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(AppTheme.line, lineWidth: 1)
-                )
+    private func hasActiveSettlement(_ customer: Customer) -> Bool {
+        store.settlementBatches.contains {
+            !$0.isRevoked && $0.customer.caseInsensitiveCompare(customer.name) == .orderedSame
+        } || store.customerReceipts.contains {
+            !$0.isRevoked && $0.customer.caseInsensitiveCompare(customer.name) == .orderedSame
         }
-        .contentShape(Rectangle())
-        .buttonStyle(PlainButtonStyle())
-    }
-
-    private func formatTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return formatter.string(from: date)
     }
 
     private func save(
-        kind: DirectoryKind,
-        existing: DirectoryMember?,
+        customer: Customer?,
         name: String,
-        unitPriceCents: Int64?
+        price: Int64?,
+        mode: CustomerSettlementMode
     ) throws {
-        let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { throw DirectoryValidationError.emptyName }
-        guard value.count <= 40 else { throw DirectoryValidationError.tooLong }
-
-        do {
-            switch (kind, existing) {
-            case (.customer, nil):
-                try store.addCustomer(name: value, unitPriceCents: unitPriceCents)
-            case (.customer, let member?):
-                guard let customer = store.customers.first(where: { $0.id == member.id }) else {
-                    throw DirectoryValidationError.notFound
-                }
-                try store.updateCustomer(customer, name: value, unitPriceCents: unitPriceCents)
-            case (.employee, nil):
-                try store.addEmployee(name: value)
-            case (.employee, let member?):
-                guard let employee = store.employees.first(where: { $0.id == member.id }) else {
-                    throw DirectoryValidationError.notFound
-                }
-                try store.updateEmployee(employee, name: value)
-            }
-        } catch {
-            let message = error.localizedDescription
-            if message.lowercased().contains("unique") {
-                throw DirectoryValidationError.duplicate
-            }
-            throw error
+        if let customer {
+            try store.updateCustomer(customer, name: name, unitPriceMilliYuan: price, settlementMode: mode)
+        } else {
+            try store.addCustomer(name: name, unitPriceMilliYuan: price, settlementMode: mode)
         }
     }
 
-    private func delete(_ target: DirectoryDeleteTarget) {
+    private func delete(_ customer: Customer) {
         do {
-            switch target.kind {
-            case .customer:
-                guard let customer = store.customers.first(where: { $0.id == target.member.id }) else { return }
-                try store.deleteCustomer(customer)
-            case .employee:
-                guard let employee = store.employees.first(where: { $0.id == target.member.id }) else { return }
-                try store.deleteEmployee(employee)
-            }
+            try store.deleteCustomer(customer)
         } catch {
             store.lastError = error.localizedDescription
         }
     }
 }
 
-private enum DirectoryKind: Equatable {
-    case customer
-    case employee
-
-    var singular: String {
-        switch self {
-        case .customer: return "客户"
-        case .employee: return "员工"
-        }
-    }
-
-    var tabTitle: String {
-        "\(singular)管理"
-    }
-
-    var title: String {
-        "\(singular)管理"
-    }
-
-    var description: String {
-        switch self {
-        case .customer: return "录入页的客户下拉选项来自此处维护的档案。"
-        case .employee: return "录入页的员工下拉选项来自此处维护的档案。"
-        }
-    }
+private struct CustomerEditorTarget: Identifiable {
+    let customer: Customer?
+    var id: String { customer.map { String($0.id) } ?? "new" }
 }
 
-private struct DirectoryMember: Identifiable {
-    let id: Int64
-    let name: String
-    let unitPriceCents: Int64?
-    let createdAt: Date
-    let updatedAt: Date
-}
-
-private enum DirectorySheetItem: Identifiable {
-    case editor(DirectoryKind, DirectoryMember?)
-    case detail(DirectoryKind, DirectoryMember)
-    case settlement
-    case cloud
-
-    var id: String {
-        switch self {
-        case .editor(let kind, let member):
-            return "editor-\(kind.singular)-\(member?.id ?? 0)"
-        case .detail(let kind, let member):
-            return "detail-\(kind.singular)-\(member.id)"
-        case .settlement:
-            return "settlement"
-        case .cloud:
-            return "cloud"
-        }
-    }
-}
-
-private struct DirectoryDeleteTarget: Identifiable {
-    let kind: DirectoryKind
-    let member: DirectoryMember
-
-    var id: String { "\(kind.singular)-\(member.id)" }
-}
-
-private enum DirectoryValidationError: LocalizedError {
-    case emptyName
-    case tooLong
-    case duplicate
-    case notFound
-    case invalidPrice
-    case cannotClearPrice
-
-    var errorDescription: String? {
-        switch self {
-        case .emptyName: return "名称不能为空。"
-        case .tooLong: return "名称最多 40 个字符。"
-        case .duplicate: return "该名称已存在，请使用其他名称。"
-        case .notFound: return "该档案已不存在，请刷新后重试。"
-        case .invalidPrice: return "加工单价必须是大于 0、最多两位小数的金额。"
-        case .cannotClearPrice: return "已设置的加工单价不能清空；后续修改只影响新录入流水。"
-        }
-    }
-}
-
-private struct DirectoryEditorSheet: View {
-    let kind: DirectoryKind
-    let member: DirectoryMember?
-    let onSave: (String, Int64?) throws -> Void
+private struct CustomerEditorSheet: View {
+    let customer: Customer?
+    let settlementLocked: Bool
+    let onSave: (String, Int64?, CustomerSettlementMode) throws -> Void
 
     @Environment(\.presentationMode) private var presentationMode
     @State private var name: String
     @State private var priceText: String
+    @State private var settlementMode: CustomerSettlementMode
     @State private var errorMessage = ""
     @State private var showingPriceConfirmation = false
-    @State private var pendingPriceCents: Int64?
+    @State private var pendingPrice: Int64?
 
-    init(kind: DirectoryKind, member: DirectoryMember?, onSave: @escaping (String, Int64?) throws -> Void) {
-        self.kind = kind
-        self.member = member
+    init(
+        customer: Customer?,
+        settlementLocked: Bool,
+        onSave: @escaping (String, Int64?, CustomerSettlementMode) throws -> Void
+    ) {
+        self.customer = customer
+        self.settlementLocked = settlementLocked
         self.onSave = onSave
-        _name = State(initialValue: member?.name ?? "")
-        _priceText = State(initialValue: MoneyText.plainYuan(member?.unitPriceCents))
+        _name = State(initialValue: customer?.name ?? "")
+        _priceText = State(initialValue: MoneyText.plainYuan(customer?.unitPriceMilliYuan))
+        _settlementMode = State(initialValue: customer?.settlementMode ?? .batch)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 13) {
-                Image(systemName: "pencil")
+                Image(systemName: "building.2")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundColor(AppTheme.accentDark)
                     .frame(width: 46, height: 46)
                     .background(AppTheme.accentSoft)
                     .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("\(member == nil ? "新增" : "编辑")\(kind.singular)")
+                    Text(customer == nil ? "新增客户" : "编辑客户")
                         .font(.system(size: 20, weight: .bold))
                         .foregroundColor(AppTheme.text)
-                    Text(kind == .customer
-                         ? "同一客户的所有型号共用此加工单价。"
-                         : "保存后立即用于计件录入页下拉选项。")
+                    Text("同一客户所有型号共用同一加工单价")
                         .font(.system(size: 12))
                         .foregroundColor(AppTheme.textMuted)
                 }
             }
 
-            VStack(alignment: .leading, spacing: 7) {
-                Text("\(kind.singular)名称")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(AppTheme.textMuted)
-                TextField("请输入\(kind.singular)名称", text: $name)
-                    .font(.system(size: 15))
-                    .padding(.horizontal, 12)
-                    .frame(height: 44)
-                    .background(Color.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(errorMessage.isEmpty ? AppTheme.line : AppTheme.danger, lineWidth: 1)
-                    )
-                    .onChange(of: name) { _ in errorMessage = "" }
-            }
+            fieldLabel("客户名称")
+            TextField("请输入客户名称", text: $name)
+                .modifier(EditorFieldStyle())
+                .onChange(of: name) { _ in errorMessage = "" }
 
-            if kind == .customer {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("加工单价（元 / 件·色）")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(AppTheme.textMuted)
-                    HStack(spacing: 8) {
-                        Text("¥")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundColor(AppTheme.textMuted)
-                        TextField("例如 0.35", text: $priceText)
-                            .keyboardType(.decimalPad)
-                            .font(.system(size: 15))
-                            .onChange(of: priceText) { _ in errorMessage = "" }
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(height: 44)
-                    .background(Color.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(errorMessage.isEmpty ? AppTheme.line : AppTheme.danger, lineWidth: 1)
-                    )
-                    Text("应收金额 = 加工单价 × 数量 × 色数。每条流水会保存录入当时的单价。")
+            fieldLabel("加工单价（元 / 件·色）")
+            HStack(spacing: 8) {
+                Text("¥")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(AppTheme.textMuted)
+                TextField("例如 0.350", text: $priceText)
+                    .keyboardType(.decimalPad)
+                    .onChange(of: priceText) { _ in errorMessage = "" }
+            }
+            .modifier(EditorFieldStyle())
+            Text("最多三位小数。应收加工费 = 单价 × 数量 × 色数。")
+                .font(.system(size: 11))
+                .foregroundColor(AppTheme.textFaint)
+
+            fieldLabel("结算方式")
+            Picker("结算方式", selection: $settlementMode) {
+                ForEach(CustomerSettlementMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(SegmentedPickerStyle())
+            .disabled(settlementLocked)
+            .opacity(settlementLocked ? 0.58 : 1)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(settlementMode.shortDescription)
+                    .font(.system(size: 12))
+                    .foregroundColor(AppTheme.textMuted)
+                if settlementLocked {
+                    Text("该客户已有有效结款或回款记录，结算方式已锁定。请到对应管理页撤销全部记录后再修改。")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(AppTheme.danger)
+                } else {
+                    Text("客户产生首笔有效结款或回款后，结算方式将自动锁定。")
                         .font(.system(size: 11))
                         .foregroundColor(AppTheme.textFaint)
                 }
@@ -667,7 +437,7 @@ private struct DirectoryEditorSheet: View {
 
             if !errorMessage.isEmpty {
                 Text(errorMessage)
-                    .font(.system(size: 12))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundColor(AppTheme.danger)
             }
 
@@ -675,26 +445,314 @@ private struct DirectoryEditorSheet: View {
 
             HStack {
                 Spacer()
-                Button("取消") {
-                    presentationMode.wrappedValue.dismiss()
-                }
-                .buttonStyle(SecondaryButtonStyle())
-                Button("保存") {
-                    attemptSave()
-                }
-                .buttonStyle(PrimaryButtonStyle())
+                Button("取消") { presentationMode.wrappedValue.dismiss() }
+                    .buttonStyle(SecondaryButtonStyle())
+                Button("保存") { attemptSave() }
+                    .buttonStyle(PrimaryButtonStyle())
             }
         }
-        .padding(24)
-        .frame(minWidth: 470, minHeight: kind == .customer ? 410 : 300)
+        .padding(26)
+        .frame(minWidth: 620, minHeight: 500)
         .background(AppTheme.background)
         .alert(isPresented: $showingPriceConfirmation) {
             Alert(
                 title: Text("首次设置加工单价"),
-                message: Text("保存后，该客户所有尚未保存单价的历史流水都会使用本次单价，且以后修改单价只影响新录入流水。是否继续？"),
-                primaryButton: .default(Text("确认并覆盖历史")) {
-                    performSave(priceCents: pendingPriceCents)
-                },
+                message: Text("保存后，该客户所有尚未保存单价的历史流水都会使用本次单价。以后修改单价只影响新录入流水。是否继续？"),
+                primaryButton: .default(Text("确认并覆盖历史")) { performSave(price: pendingPrice) },
+                secondaryButton: .cancel(Text("返回检查"))
+            )
+        }
+    }
+
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .bold))
+            .foregroundColor(AppTheme.textMuted)
+    }
+
+    private func attemptSave() {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            errorMessage = "客户名称不能为空。"
+            return
+        }
+        guard trimmedName.count <= 40 else {
+            errorMessage = "客户名称最多 40 个字符。"
+            return
+        }
+
+        let trimmedPrice = priceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var price: Int64?
+        if trimmedPrice.isEmpty {
+            if customer?.unitPriceMilliYuan != nil {
+                errorMessage = "已设置的加工单价不能清空；后续修改只影响新录入流水。"
+                return
+            }
+        } else {
+            guard let parsed = MoneyText.parseMilliYuan(trimmedPrice), parsed > 0 else {
+                errorMessage = "加工单价必须是大于 0、最多三位小数的金额。"
+                return
+            }
+            price = parsed
+        }
+
+        if customer != nil, customer?.unitPriceMilliYuan == nil, price != nil {
+            pendingPrice = price
+            showingPriceConfirmation = true
+        } else {
+            performSave(price: price)
+        }
+    }
+
+    private func performSave(price: Int64?) {
+        do {
+            try onSave(name.trimmingCharacters(in: .whitespacesAndNewlines), price, settlementMode)
+            presentationMode.wrappedValue.dismiss()
+        } catch {
+            let message = error.localizedDescription
+            errorMessage = message.lowercased().contains("unique") ? "该客户名称已存在。" : message
+        }
+    }
+}
+
+private struct EmployeeDirectoryView: View {
+    @EnvironmentObject private var store: AppStore
+    let onClose: () -> Void
+
+    @State private var editorTarget: EmployeeEditorTarget?
+    @State private var detailTarget: Employee?
+    @State private var deleteTarget: Employee?
+
+    var body: some View {
+        WorkshopShell {
+            WorkshopTopBar(
+                brandTitle: "员工管理",
+                brandSubtitle: "Employees",
+                brandIcon: "person.2",
+                backAction: onClose
+            ) {
+                LocalModeBadge(text: "工资单价三位小数")
+            }
+
+            ScrollView {
+                VStack(spacing: 18) {
+                    PageHeading(
+                        eyebrow: "员工档案",
+                        title: "员工管理",
+                        note: "每位员工使用统一工资单价。首次设置时，会覆盖该员工此前尚未保存工资单价的历史流水。"
+                    ) {
+                        Button {
+                            editorTarget = EmployeeEditorTarget(employee: nil)
+                        } label: {
+                            HStack(spacing: 7) {
+                                Image(systemName: "plus")
+                                Text("新增员工")
+                            }
+                        }
+                        .buttonStyle(PrimaryButtonStyle())
+                    }
+
+                    employeeTable
+                }
+                .padding(.horizontal, 32)
+                .padding(.top, 28)
+                .padding(.bottom, 34)
+            }
+        }
+        .sheet(item: $editorTarget) { target in
+            EmployeeEditorSheet(employee: target.employee) { name, wage in
+                if let employee = target.employee {
+                    try store.updateEmployee(employee, name: name, wageMilliYuan: wage)
+                } else {
+                    try store.addEmployee(name: name, wageMilliYuan: wage)
+                }
+            }
+        }
+        .sheet(item: $detailTarget) { employee in
+            EmployeeDetailSheet(employee: employee)
+        }
+        .alert(item: $deleteTarget) { employee in
+            Alert(
+                title: Text("确认删除员工？"),
+                message: Text("将删除“\(employee.name)”档案。已有流水中的员工名称不会改变。"),
+                primaryButton: .destructive(Text("删除员工")) { delete(employee) },
+                secondaryButton: .cancel(Text("取消"))
+            )
+        }
+    }
+
+    private var employeeTable: some View {
+        Panel {
+            VStack(spacing: 0) {
+                HStack(spacing: 14) {
+                    Text("员工名称").frame(maxWidth: .infinity, alignment: .leading)
+                    Text("当前工资单价").frame(width: 170, alignment: .trailing)
+                    Text("最近修改").frame(width: 170, alignment: .leading)
+                    Text("操作").frame(width: 132, alignment: .trailing)
+                }
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(AppTheme.textMuted)
+                .padding(.horizontal, 20)
+                .frame(height: 44)
+                .background(AppTheme.surfaceSoft)
+                .overlay(Rectangle().fill(AppTheme.line).frame(height: 1), alignment: .bottom)
+
+                if store.employees.isEmpty {
+                    EmptyStateView(title: "暂无员工档案", message: "点击右上角“新增员工”建立第一位员工。")
+                        .frame(minHeight: 280)
+                } else {
+                    ForEach(Array(store.employees.enumerated()), id: \.element.id) { index, employee in
+                        employeeRow(employee, alternate: !index.isMultiple(of: 2))
+                        if index < store.employees.count - 1 {
+                            Rectangle().fill(AppTheme.line).frame(height: 1).padding(.horizontal, 20)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func employeeRow(_ employee: Employee, alternate: Bool) -> some View {
+        HStack(spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "person.fill")
+                    .foregroundColor(AppTheme.success)
+                    .frame(width: 34, height: 34)
+                    .background(Color(red: 0.93, green: 0.97, blue: 0.95))
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                Text(employee.name)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(AppTheme.text)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(MoneyText.yuan(employee.wageMilliYuan))
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                .foregroundColor(employee.wageMilliYuan == nil ? AppTheme.danger : AppTheme.text)
+                .frame(width: 170, alignment: .trailing)
+
+            Text(formatDirectoryTime(employee.updatedAt))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(AppTheme.textMuted)
+                .frame(width: 170, alignment: .leading)
+
+            HStack(spacing: 7) {
+                directoryActionButton(icon: "eye", color: AppTheme.textMuted) {
+                    detailTarget = employee
+                }
+                directoryActionButton(icon: "pencil", color: AppTheme.accentDark) {
+                    editorTarget = EmployeeEditorTarget(employee: employee)
+                }
+                directoryActionButton(icon: "trash", color: AppTheme.danger) {
+                    deleteTarget = employee
+                }
+            }
+            .frame(width: 132, alignment: .trailing)
+        }
+        .padding(.horizontal, 20)
+        .frame(minHeight: 62)
+        .background(alternate ? AppTheme.surfaceSoft.opacity(0.7) : Color.white)
+    }
+
+    private func delete(_ employee: Employee) {
+        do {
+            try store.deleteEmployee(employee)
+        } catch {
+            store.lastError = error.localizedDescription
+        }
+    }
+}
+
+private struct EmployeeEditorTarget: Identifiable {
+    let employee: Employee?
+    var id: String { employee.map { String($0.id) } ?? "new" }
+}
+
+private struct EmployeeEditorSheet: View {
+    let employee: Employee?
+    let onSave: (String, Int64?) throws -> Void
+
+    @Environment(\.presentationMode) private var presentationMode
+    @State private var name: String
+    @State private var wageText: String
+    @State private var errorMessage = ""
+    @State private var showingWageConfirmation = false
+    @State private var pendingWage: Int64?
+
+    init(employee: Employee?, onSave: @escaping (String, Int64?) throws -> Void) {
+        self.employee = employee
+        self.onSave = onSave
+        _name = State(initialValue: employee?.name ?? "")
+        _wageText = State(initialValue: MoneyText.plainYuan(employee?.wageMilliYuan))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 13) {
+                Image(systemName: "person.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(AppTheme.success)
+                    .frame(width: 46, height: 46)
+                    .background(Color(red: 0.93, green: 0.97, blue: 0.95))
+                    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(employee == nil ? "新增员工" : "编辑员工")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundColor(AppTheme.text)
+                    Text("每位员工使用统一工资单价")
+                        .font(.system(size: 12))
+                        .foregroundColor(AppTheme.textMuted)
+                }
+            }
+
+            Text("员工名称")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(AppTheme.textMuted)
+            TextField("请输入员工名称", text: $name)
+                .modifier(EditorFieldStyle())
+                .onChange(of: name) { _ in errorMessage = "" }
+
+            Text("工资单价（元 / 件·色）")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(AppTheme.textMuted)
+            HStack(spacing: 8) {
+                Text("¥")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(AppTheme.textMuted)
+                TextField("例如 0.250", text: $wageText)
+                    .keyboardType(.decimalPad)
+                    .onChange(of: wageText) { _ in errorMessage = "" }
+            }
+            .modifier(EditorFieldStyle())
+            Text("应发工资 = 工资单价 × 数量 × 色数。未设置工资单价时，禁止提交该员工的计件流水。")
+                .font(.system(size: 11))
+                .foregroundColor(AppTheme.textFaint)
+
+            if !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(AppTheme.danger)
+            }
+
+            Spacer(minLength: 0)
+
+            HStack {
+                Spacer()
+                Button("取消") { presentationMode.wrappedValue.dismiss() }
+                    .buttonStyle(SecondaryButtonStyle())
+                Button("保存") { attemptSave() }
+                    .buttonStyle(PrimaryButtonStyle())
+            }
+        }
+        .padding(26)
+        .frame(minWidth: 600, minHeight: 430)
+        .background(AppTheme.background)
+        .alert(isPresented: $showingWageConfirmation) {
+            Alert(
+                title: Text("首次设置员工工资单价"),
+                message: Text("保存后，该员工所有尚未保存工资单价的历史流水都会使用本次单价。以后修改工资单价只影响新录入流水。是否继续？"),
+                primaryButton: .default(Text("确认并覆盖历史")) { performSave(wage: pendingWage) },
                 secondaryButton: .cancel(Text("返回检查"))
             )
         }
@@ -703,96 +761,76 @@ private struct DirectoryEditorSheet: View {
     private func attemptSave() {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
-            errorMessage = DirectoryValidationError.emptyName.localizedDescription
+            errorMessage = "员工名称不能为空。"
             return
         }
         guard trimmedName.count <= 40 else {
-            errorMessage = DirectoryValidationError.tooLong.localizedDescription
+            errorMessage = "员工名称最多 40 个字符。"
             return
         }
 
-        var priceCents: Int64?
-        if kind == .customer {
-            let trimmedPrice = priceText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmedPrice.isEmpty {
-                if member?.unitPriceCents != nil {
-                    errorMessage = DirectoryValidationError.cannotClearPrice.localizedDescription
-                    return
-                }
-            } else {
-                guard let parsed = MoneyText.parseCents(trimmedPrice), parsed > 0 else {
-                    errorMessage = DirectoryValidationError.invalidPrice.localizedDescription
-                    return
-                }
-                priceCents = parsed
+        let trimmedWage = wageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var wage: Int64?
+        if trimmedWage.isEmpty {
+            if employee?.wageMilliYuan != nil {
+                errorMessage = "已设置的工资单价不能清空；后续修改只影响新录入流水。"
+                return
             }
+        } else {
+            guard let parsed = MoneyText.parseMilliYuan(trimmedWage), parsed > 0 else {
+                errorMessage = "工资单价必须是大于 0、最多三位小数的金额。"
+                return
+            }
+            wage = parsed
         }
 
-        if kind == .customer, member?.unitPriceCents == nil, priceCents != nil {
-            pendingPriceCents = priceCents
-            showingPriceConfirmation = true
+        if employee != nil, employee?.wageMilliYuan == nil, wage != nil {
+            pendingWage = wage
+            showingWageConfirmation = true
         } else {
-            performSave(priceCents: priceCents)
+            performSave(wage: wage)
         }
     }
 
-    private func performSave(priceCents: Int64?) {
+    private func performSave(wage: Int64?) {
         do {
-            try onSave(name.trimmingCharacters(in: .whitespacesAndNewlines), priceCents)
+            try onSave(name.trimmingCharacters(in: .whitespacesAndNewlines), wage)
             presentationMode.wrappedValue.dismiss()
         } catch {
-            errorMessage = error.localizedDescription
+            let message = error.localizedDescription
+            errorMessage = message.lowercased().contains("unique") ? "该员工名称已存在。" : message
         }
     }
 }
 
-private struct DirectoryDetailSheet: View {
-    let kind: DirectoryKind
-    let member: DirectoryMember
+private struct CustomerDetailSheet: View {
+    let customer: Customer
     @Environment(\.presentationMode) private var presentationMode
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 13) {
-                Image(systemName: "eye")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(AppTheme.success)
-                    .frame(width: 46, height: 46)
-                    .background(Color(red: 0.93, green: 0.97, blue: 0.95))
-                    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("\(kind.singular)档案")
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundColor(AppTheme.text)
-                    Text("档案信息只保存在本机。")
-                        .font(.system(size: 12))
-                        .foregroundColor(AppTheme.textMuted)
-                }
-            }
-
-            detailRow(label: "名称", value: member.name)
-            if kind == .customer {
-                detailRow(label: "加工单价", value: MoneyText.yuan(member.unitPriceCents))
-            }
-            detailRow(label: "档案编号", value: String(member.id))
-            detailRow(label: "创建时间", value: formatTime(member.createdAt))
-            detailRow(label: "最近修改", value: formatTime(member.updatedAt))
-
+            Text("客户档案")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundColor(AppTheme.text)
+            detailRow("名称", customer.name)
+            detailRow("结算方式", customer.settlementMode.title)
+            detailRow("加工单价", MoneyText.yuan(customer.unitPriceMilliYuan))
+            detailRow("档案编号", String(customer.id))
+            detailRow("创建时间", formatDirectoryTime(customer.createdAt, seconds: true))
+            detailRow("最近修改", formatDirectoryTime(customer.updatedAt, seconds: true))
             Spacer(minLength: 0)
             HStack {
                 Spacer()
-                Button("关闭") {
-                    presentationMode.wrappedValue.dismiss()
-                }
-                .buttonStyle(SecondaryButtonStyle())
+                Button("关闭") { presentationMode.wrappedValue.dismiss() }
+                    .buttonStyle(SecondaryButtonStyle())
             }
         }
-        .padding(24)
-        .frame(minWidth: 430, minHeight: 330)
+        .padding(26)
+        .frame(minWidth: 460, minHeight: 400)
         .background(AppTheme.background)
     }
 
-    private func detailRow(label: String, value: String) -> some View {
+    private func detailRow(_ label: String, _ value: String) -> some View {
         HStack {
             Text(label)
                 .font(.system(size: 12, weight: .semibold))
@@ -806,11 +844,85 @@ private struct DirectoryDetailSheet: View {
         .padding(.vertical, 10)
         .overlay(Rectangle().fill(AppTheme.line).frame(height: 1), alignment: .bottom)
     }
+}
 
-    private func formatTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return formatter.string(from: date)
+private struct EmployeeDetailSheet: View {
+    let employee: Employee
+    @Environment(\.presentationMode) private var presentationMode
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("员工档案")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundColor(AppTheme.text)
+            detailRow("名称", employee.name)
+            detailRow("工资单价", MoneyText.yuan(employee.wageMilliYuan))
+            detailRow("档案编号", String(employee.id))
+            detailRow("创建时间", formatDirectoryTime(employee.createdAt, seconds: true))
+            detailRow("最近修改", formatDirectoryTime(employee.updatedAt, seconds: true))
+            Spacer(minLength: 0)
+            HStack {
+                Spacer()
+                Button("关闭") { presentationMode.wrappedValue.dismiss() }
+                    .buttonStyle(SecondaryButtonStyle())
+            }
+        }
+        .padding(26)
+        .frame(minWidth: 460, minHeight: 360)
+        .background(AppTheme.background)
     }
+
+    private func detailRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(AppTheme.textFaint)
+                .frame(width: 90, alignment: .leading)
+            Text(value)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(AppTheme.text)
+            Spacer()
+        }
+        .padding(.vertical, 10)
+        .overlay(Rectangle().fill(AppTheme.line).frame(height: 1), alignment: .bottom)
+    }
+}
+
+private struct EditorFieldStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .font(.system(size: 15))
+            .padding(.horizontal, 12)
+            .frame(height: 44)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(AppTheme.line, lineWidth: 1)
+            )
+    }
+}
+
+private func directoryActionButton(icon: String, color: Color, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+        Image(systemName: icon)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundColor(color)
+            .frame(width: 36, height: 36)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(AppTheme.line, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+    }
+    .buttonStyle(PlainButtonStyle())
+}
+
+private func formatDirectoryTime(_ date: Date, seconds: Bool = false) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.dateFormat = seconds ? "yyyy-MM-dd HH:mm:ss" : "yyyy-MM-dd HH:mm"
+    return formatter.string(from: date)
 }

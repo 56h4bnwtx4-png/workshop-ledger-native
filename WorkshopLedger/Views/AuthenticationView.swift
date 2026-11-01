@@ -18,7 +18,7 @@ struct AccountLoginView: View {
                         .frame(width: 58, height: 58)
                         .background(AppTheme.accent)
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    Text("车间计件")
+                    Text("段誉的段")
                         .font(.system(size: 42, weight: .heavy, design: .rounded))
                         .foregroundColor(.white)
                     Text("原生 iPad 账本 · 云端独立账号")
