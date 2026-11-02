@@ -149,13 +149,14 @@ struct WorkshopTopBar<Trailing: View>: View {
             .frame(maxWidth: .infinity)
 
             HStack(spacing: 12) {
-                Image(systemName: brandIcon)
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(.white)
+                Image("BrandAvatar")
+                    .resizable()
+                    .scaledToFill()
                     .frame(width: 34, height: 34)
-                    .background(AppTheme.accent)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color.white.opacity(0.16), lineWidth: 1))
                     .shadow(color: AppTheme.accent.opacity(0.28), radius: 9, x: 0, y: 7)
+                    .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(brandTitle)
