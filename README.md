@@ -1,8 +1,17 @@
-# 段誉的段 · iPadOS 原生版 v1.5.0
+# 段誉的段 · iPadOS 原生版 v1.5.2
 
 纯 SwiftUI 原生应用，不使用 WebView。账本保存在 iPad 应用沙盒内的 SQLite 数据库，正式账单、客户、员工、客户回款和工资发放记录会通过 HTTPS 自动备份到云端。草稿始终只保存在本机。
 
 > TrollStore 升级时必须覆盖安装，不要先卸载旧版。卸载会删除本机 SQLite 数据库和钥匙串登录状态，升级前的自动备份也会随 App 沙盒一起丢失。
+
+## v1.5.2 更新
+
+- 打开已有正式账单后，日期锁定，不允许误改正式账单日期
+- 已有正式账单没有未提交修改时，左下角显示“删除当日账单”，点击后必须二次确认
+- 删除会同时删除该日账单明细和本机草稿，不可撤销
+- 含已结清流水的账单禁止删除；需先撤销对应结清批次
+- 已有正式账单存在未提交修改时，继续显示“放弃草稿”，不显示删除按钮
+- 提交时对正式账单日期做硬校验，防止绕过界面改动日期
 
 ## v1.5.0 更新
 
@@ -40,6 +49,7 @@
 - 新增一行时自动带入上一行客户和员工
 - 草稿按日期自动保存，可放弃草稿
 - 支持补录历史日期，也可直接修改已有账单
+- 已有正式账单可安全删除（二次确认，已结清账单除外）
 - 客户、员工档案独立管理，支持新增、编辑、查看和删除
 - 原始流水、客户统计、员工统计、年度结算和 1–5 色分类统计
 - CSV 导出：UTF-8 BOM，不包含提交时间
@@ -66,7 +76,7 @@ iPad 登录类型为 `ios`，拥有写入权限。Windows 登录类型为 `windo
 - `GET /api/v1/snapshots/{id}/json`
 - `GET /api/v1/snapshots/{id}/download`
 
-v1.5.0 必须搭配服务端 v0.5.0（schema 3）。旧服务端会拒绝新金额字段、客户回款和工资发放数据。
+v1.5.2 必须搭配服务端 v0.5.0（schema 3）。旧服务端会拒绝新金额字段、客户回款和工资发放数据。
 
 ## 目录
 
@@ -89,8 +99,8 @@ tools/inject_model_catalog.py    私有型号词库注入与校验脚本
 
 1. 打开仓库的 **Actions** 页面，选择 **Build unsigned arm64 IPA**。
 2. 点击 **Run workflow**。
-3. 构建完成后下载 `WorkshopLedger-v1.5.0-iOS-arm64-unsigned` Artifact。
-4. 解压后得到 `WorkshopLedger-v1.5.0-iOS-arm64-unsigned.ipa` 和 `SHA256SUMS.txt`。
+3. 构建完成后下载 `WorkshopLedger-v1.5.2-iOS-arm64-unsigned` Artifact。
+4. 解压后得到 `WorkshopLedger-v1.5.2-iOS-arm64-unsigned.ipa` 和 `SHA256SUMS.txt`。
 5. 将 IPA 传到 iPad，使用 TrollStore 覆盖安装。
 
 ### 构建说明

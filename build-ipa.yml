@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - "WorkshopLedger/**"
+      - "tools/inject_model_catalog.py"
       - "project.yml"
       - ".github/workflows/build-ipa.yml"
 
@@ -14,11 +15,11 @@ permissions:
   contents: read
 
 env:
-  APP_VERSION: "1.2.0"
+  APP_VERSION: "1.5.2"
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
 
     steps:
@@ -30,6 +31,24 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Inject local model catalog
+        env:
+          MODEL_CATALOG_B64: ${{ secrets.MODEL_CATALOG_B64 }}
+        run: python3 tools/inject_model_catalog.py
+
+      - name: Verify local model catalog source
+        shell: bash
+        env:
+          MODEL_CATALOG_B64: ${{ secrets.MODEL_CATALOG_B64 }}
+        run: |
+          set -euo pipefail
+          test -f WorkshopLedger/Resources/model-catalog.txt
+          MODEL_COUNT=$(grep -Ev '^[[:space:]]*(#|$)' WorkshopLedger/Resources/model-catalog.txt | wc -l | tr -d ' ')
+          echo "model_catalog_entries=$MODEL_COUNT"
+          if [ -n "${MODEL_CATALOG_B64:-}" ]; then
+            test "$MODEL_COUNT" -gt 0
+          fi
 
       - name: Generate Xcode project
         run: xcodegen generate
@@ -54,12 +73,20 @@ jobs:
 
       - name: Verify and package IPA
         shell: bash
+        env:
+          MODEL_CATALOG_B64: ${{ secrets.MODEL_CATALOG_B64 }}
         run: |
           set -euo pipefail
           APP_PATH="build/Build/Products/Release-iphoneos/WorkshopLedger.app"
           IPA_NAME="WorkshopLedger-v${APP_VERSION}-iOS-arm64-unsigned.ipa"
           test -d "$APP_PATH"
           test -f "$APP_PATH/WorkshopLedger"
+          test -f "$APP_PATH/model-catalog.txt"
+          MODEL_COUNT=$(grep -Ev '^[[:space:]]*(#|$)' "$APP_PATH/model-catalog.txt" | wc -l | tr -d ' ')
+          echo "bundled_model_catalog_entries=$MODEL_COUNT"
+          if [ -n "${MODEL_CATALOG_B64:-}" ]; then
+            test "$MODEL_COUNT" -gt 0
+          fi
           lipo -info "$APP_PATH/WorkshopLedger"
           lipo -info "$APP_PATH/WorkshopLedger" | grep -q arm64
           plutil -p "$APP_PATH/Info.plist"
@@ -76,7 +103,7 @@ jobs:
         with:
           name: WorkshopLedger-v${{ env.APP_VERSION }}-iOS-arm64-unsigned
           path: |
-            WorkshopLedger-v1.2.0-iOS-arm64-unsigned.ipa
+            WorkshopLedger-v${{ env.APP_VERSION }}-iOS-arm64-unsigned.ipa
             SHA256SUMS.txt
           if-no-files-found: error
 
