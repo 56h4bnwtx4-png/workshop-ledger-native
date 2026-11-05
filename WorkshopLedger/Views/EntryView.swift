@@ -20,6 +20,7 @@ struct EntryView: View {
     @State private var showDiscardConfirmation = false
     @State private var autoSaveWorkItem: DispatchWorkItem?
     @State private var showDatePicker = false
+    @State private var modelSearchIndex: [ModelSearchEntry] = []
 
     init(initialDate: Date?, isBackfill: Bool = false, onClose: @escaping () -> Void) {
         let normalizedDate = DateKey.startOfDay(initialDate ?? Date())
@@ -511,6 +512,7 @@ struct EntryView: View {
 
     private func loadInitialData() {
         guard !didLoad else { return }
+        rebuildModelSearchIndex()
         if !hasSelectedDate {
             rows = [EntryRow.empty()]
             source = .new
@@ -547,31 +549,38 @@ struct EntryView: View {
         }
     }
 
+    private func rebuildModelSearchIndex() {
+        modelSearchIndex = store.allModelNames.compactMap { name in
+            let normalized = normalizedModelSearchText(name)
+            guard !normalized.isEmpty else { return nil }
+            return ModelSearchEntry(name: name, normalizedName: normalized, length: normalized.count)
+        }
+    }
+
     private func modelSuggestions(for text: String) -> [String] {
         let query = normalizedModelSearchText(text)
         guard query.count >= 2 else { return [] }
 
-        return store.allModelNames
-            .compactMap { model -> (model: String, rank: Int, length: Int)? in
-                let normalized = normalizedModelSearchText(model)
-                guard let match = normalized.range(of: query) else { return nil }
+        return modelSearchIndex
+            .compactMap { entry -> ModelSuggestionCandidate? in
+                guard let match = entry.normalizedName.range(of: query) else { return nil }
                 let rank: Int
-                if normalized == query {
+                if entry.normalizedName == query {
                     rank = 0
-                } else if match.lowerBound == normalized.startIndex {
+                } else if match.lowerBound == entry.normalizedName.startIndex {
                     rank = 1
                 } else {
                     rank = 2
                 }
-                return (model, rank, normalized.count)
+                return ModelSuggestionCandidate(name: entry.name, rank: rank, length: entry.length)
             }
             .sorted { left, right in
                 if left.rank != right.rank { return left.rank < right.rank }
                 if left.length != right.length { return left.length < right.length }
-                return left.model.localizedStandardCompare(right.model) == .orderedAscending
+                return left.name.localizedStandardCompare(right.name) == .orderedAscending
             }
             .prefix(4)
-            .map { $0.model }
+            .map(\.name)
     }
 
     private func normalizedModelSearchText(_ text: String) -> String {
@@ -856,6 +865,18 @@ private struct EntrySignatureRow: Equatable {
     let model: String
     let quantity: String
     let colorCount: Int
+}
+
+private struct ModelSearchEntry {
+    let name: String
+    let normalizedName: String
+    let length: Int
+}
+
+private struct ModelSuggestionCandidate {
+    let name: String
+    let rank: Int
+    let length: Int
 }
 
 private struct EntryColumnWidths {
