@@ -270,6 +270,16 @@ final class AppStore: ObservableObject {
         return bill
     }
 
+    func deleteBill(date: Date) throws {
+        try ensureWritable()
+        guard let database else {
+            throw DatabaseError.openFailed("数据库未打开")
+        }
+        try database.deleteBill(date: date)
+        bills = try database.loadBills()
+        drafts = try database.loadDraftSummaries()
+        markCloudDirty(billDate: date)
+    }
     func addCustomer(
         name: String,
         unitPriceMilliYuan: Int64? = nil,

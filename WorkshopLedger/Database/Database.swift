@@ -823,6 +823,57 @@ final class Database {
         }
     }
 
+    func deleteBill(date: Date) throws {
+        guard db != nil else { throw DatabaseError.openFailed("数据库未打开") }
+        let billDate = DateKey.string(from: date)
+
+        try execute("BEGIN IMMEDIATE TRANSACTION;")
+        do {
+            var billID: Int64?
+            try withStatement("SELECT id FROM bills WHERE bill_date = ? LIMIT 1;") { statement in
+                try bindText(billDate, at: 1, in: statement)
+                if sqlite3_step(statement) == SQLITE_ROW {
+                    billID = sqlite3_column_int64(statement, 0)
+                }
+            }
+            guard let billID else {
+                throw DatabaseError.stepFailed("该日期没有正式账单。")
+            }
+
+            var hasSettledItems = false
+            try withStatement("""
+                SELECT 1 FROM bill_items
+                WHERE bill_id = ? AND settlement_batch_id IS NOT NULL
+                LIMIT 1;
+                """) { statement in
+                sqlite3_bind_int64(statement, 1, billID)
+                if sqlite3_step(statement) == SQLITE_ROW {
+                    hasSettledItems = true
+                }
+            }
+            guard !hasSettledItems else {
+                throw DatabaseError.stepFailed("该账单包含已结清流水，不能删除。请先撤销对应结清批次。")
+            }
+
+            try withStatement("DELETE FROM bill_items WHERE bill_id = ?;") { statement in
+                sqlite3_bind_int64(statement, 1, billID)
+                try stepDone(statement)
+            }
+            try withStatement("DELETE FROM drafts WHERE bill_date = ?;") { statement in
+                try bindText(billDate, at: 1, in: statement)
+                try stepDone(statement)
+            }
+            try withStatement("DELETE FROM bills WHERE id = ?;") { statement in
+                sqlite3_bind_int64(statement, 1, billID)
+                try stepDone(statement)
+            }
+
+            try execute("COMMIT;")
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
+        }
+    }
     // MARK: - Settlement
 
     func createSettlementBatch(

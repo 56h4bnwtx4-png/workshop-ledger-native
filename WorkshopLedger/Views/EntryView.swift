@@ -13,6 +13,7 @@ struct EntryView: View {
     @State private var source: EntrySource = .new
     @State private var originalDraftDate: Date?
     @State private var baselineSignature = EntrySignature(date: Date(), rows: [])
+    @State private var editingBillID: Int64?
     @State private var didLoad = false
     @State private var didFinish = false
     @State private var tableWidth: CGFloat = 820
@@ -96,6 +97,13 @@ struct EntryView: View {
                     primaryButton: .destructive(Text("确认覆盖"), action: commitSubmission),
                     secondaryButton: .cancel(Text("取消"))
                 )
+            case .deleteBill:
+                return Alert(
+                    title: Text("删除当日账单？"),
+                    message: Text("将永久删除 \(DateKey.display(billDate)) 的正式账单。删除后无法撤销，并会同步到云端。"),
+                    primaryButton: .destructive(Text("确认删除"), action: deleteCurrentBill),
+                    secondaryButton: .cancel(Text("取消"))
+                )
             case .error(let message):
                 return Alert(title: Text("无法完成操作"), message: Text(message), dismissButton: .default(Text("知道了")))
             }
@@ -107,7 +115,9 @@ struct EntryView: View {
             eyebrow: isBackfill || !hasSelectedDate ? "补录账单" : "当日账单",
             title: hasSelectedDate ? DateKey.display(billDate) : "请选择账单日期",
             note: hasSelectedDate
-                ? "\(weekday(billDate)) · 点击账单日期可手动更改用于补记"
+                ? (isEditingExistingBill
+                    ? "\(weekday(billDate)) · 正式账单日期已锁定，避免误改到其他日期"
+                    : "\(weekday(billDate)) · 点击账单日期可手动更改用于补记")
                 : "点击账单日期选择要补录的历史日期，选好后再填写记录"
         ) {
             Button {
@@ -119,9 +129,15 @@ struct EntryView: View {
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(AppTheme.textFaint)
                         Spacer(minLength: 8)
-                        Text(hasSelectedDate ? "点击可更改" : "点击选择")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(AppTheme.accentDark)
+                        HStack(spacing: 4) {
+                            if isEditingExistingBill {
+                                Image(systemName: "lock.fill")
+                                    .font(.system(size: 10, weight: .bold))
+                            }
+                            Text(isEditingExistingBill ? "已锁定" : (hasSelectedDate ? "点击可更改" : "点击选择"))
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .foregroundColor(isEditingExistingBill ? AppTheme.textMuted : AppTheme.accentDark)
                     }
                     Text(hasSelectedDate ? "\(DateKey.display(billDate)) · \(weekday(billDate))" : "请选择日期")
                         .font(.system(size: 16, weight: .bold))
@@ -135,11 +151,12 @@ struct EntryView: View {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .stroke(AppTheme.line, lineWidth: 1)
                 )
+                .opacity(isEditingExistingBill ? 0.88 : 1)
             }
             .buttonStyle(PlainButtonStyle())
+            .disabled(isEditingExistingBill)
         }
     }
-
     private var draftNotice: some View {
         HStack(alignment: .top, spacing: 13) {
             Text("!")
@@ -335,18 +352,35 @@ struct EntryView: View {
     private var actionBar: some View {
         HStack(spacing: 20) {
             HStack(spacing: 14) {
-                Button(action: requestDiscard) {
-                    HStack(spacing: 7) {
-                        Image(systemName: "trash")
-                        Text("放弃草稿")
+                if isEditingExistingBill && !canDiscard {
+                    Button(action: requestDeleteBill) {
+                        HStack(spacing: 7) {
+                            Image(systemName: "trash")
+                            Text("删除当日账单")
+                        }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 15)
+                        .frame(height: 40)
+                        .background(AppTheme.danger)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(canDiscard ? AppTheme.danger : AppTheme.textFaint)
+                    .buttonStyle(PlainButtonStyle())
+                    .contentShape(Rectangle())
+                } else {
+                    Button(action: requestDiscard) {
+                        HStack(spacing: 7) {
+                            Image(systemName: "trash")
+                            Text("放弃草稿")
+                        }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(canDiscard ? AppTheme.danger : AppTheme.textFaint)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                    .disabled(!canDiscard)
                 }
-                .buttonStyle(PlainButtonStyle())
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
-                .disabled(!canDiscard)
 
                 Text(saveStateText)
                     .font(.system(size: 12))
@@ -371,7 +405,6 @@ struct EntryView: View {
         }
         .padding(.top, 18)
     }
-
     private func customerPicker(row: Binding<EntryRow>) -> some View {
         directoryPicker(
             selection: row.customer,
@@ -494,6 +527,10 @@ struct EntryView: View {
         didLoad && currentSignature != baselineSignature
     }
 
+    private var isEditingExistingBill: Bool {
+        guard let editingBillID else { return false }
+        return store.bill(on: billDate)?.id == editingBillID
+    }
     private var canDiscard: Bool {
         hasSelectedDate && (source == .draft || store.draft(on: billDate) != nil || hasChanges)
     }
@@ -513,6 +550,7 @@ struct EntryView: View {
     private func loadInitialData() {
         guard !didLoad else { return }
         rebuildModelSearchIndex()
+        editingBillID = hasSelectedDate ? store.bill(on: billDate)?.id : nil
         if !hasSelectedDate {
             rows = [EntryRow.empty()]
             source = .new
@@ -714,6 +752,29 @@ struct EntryView: View {
         showDiscardConfirmation = true
     }
 
+    private func requestDeleteBill() {
+        guard isEditingExistingBill, !canDiscard else { return }
+        guard let bill = store.bill(on: billDate) else {
+            activeAlert = .error("没有找到该日期的正式账单，请返回主页刷新后重试。")
+            return
+        }
+        guard !bill.items.contains(where: { $0.settlementBatchID != nil }) else {
+            activeAlert = .error("该账单包含已结清流水，不能删除。请先撤销对应结清批次。")
+            return
+        }
+        activeAlert = .deleteBill
+    }
+
+    private func deleteCurrentBill() {
+        autoSaveWorkItem?.cancel()
+        do {
+            try store.deleteBill(date: billDate)
+            didFinish = true
+            onClose()
+        } catch {
+            activeAlert = .error(error.localizedDescription)
+        }
+    }
     private func discardDraft() {
         autoSaveWorkItem?.cancel()
         if source == .draft, let previousDate = originalDraftDate {
@@ -734,6 +795,12 @@ struct EntryView: View {
     private func submitTapped() {
         guard hasSelectedDate else {
             activeAlert = .error("请先选择账单日期。")
+            return
+        }
+
+        if let editingBillID,
+           store.bill(on: billDate)?.id != editingBillID {
+            activeAlert = .error("正式账单日期已锁定，不能改到其他日期。")
             return
         }
 
@@ -831,11 +898,13 @@ struct EntryView: View {
 
 private enum EntryAlert: Identifiable {
     case overwrite
+    case deleteBill
     case error(String)
 
     var id: String {
         switch self {
         case .overwrite: return "overwrite"
+        case .deleteBill: return "delete-bill"
         case .error(let message): return "error-\(message)"
         }
     }
